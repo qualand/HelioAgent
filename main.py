@@ -1,7 +1,7 @@
 from copylot_to_soltrace import *
 from concurrent.futures import ThreadPoolExecutor
 
-NRAYS = 1.e6
+NRAYS = 0.5e6
 
 
 
@@ -77,7 +77,7 @@ if __name__ == "__main__":
     # TODO: update optical errors to be data driven
 
     # Field focusing
-    field.helio_cant_method = 0         # No Canting
+    field.helio_cant_method = 0                 # No Canting
     field.helio_focus_method = 1                # 0 = Flat, 1 = At slant (each heliostat has a focal length dictated by its distance to the receiver)
     field.n_focus_bands = 3                     # helio_focus_method must be set to 1 
     field.focus_bands_method = 'average'        # 'mid-point', 'average', 'maximum'

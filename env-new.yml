@@ -1,12 +1,13 @@
 name: helioagent
 channels:
   - conda-forge
-  - defaults
 dependencies:
-  - python=3.14
+  - python=3.12
   - numpy
   - pandas
   - matplotlib
-  - vispy
   - pytest
-  - pyvista
+  - pip
+  - pip:
+      - pyvista
+      - vispy
