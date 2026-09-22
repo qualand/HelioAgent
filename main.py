@@ -100,15 +100,30 @@ if __name__ == "__main__":
     #--- Update heliostat geometry based on solar position
     for h in field.heliostats:
         h.update_geometry(PT, field.results['sp_parameters']['fluxsim.0.flux_solar_az'], field.results['sp_parameters']['fluxsim.0.flux_solar_el'])
-    # PT.write_soltrace_input_file('test_field_construction_check.stinput')
 
-    # df, ppr, nhit = simulate_soltrace(PT, dni = 950., nray = NRAYS , seed = 123, nthreads = 12)
-    # results = process_soltrace_results(PT, field.field_area)
-    # print("Receiver absorbed power: {:.2f} (kW)".format(results['Absorbed power (kW)']))
+   #--- STEP 1 TEST: does moving aim_point move the flux? YES
+    az = field.results['sp_parameters']['fluxsim.0.flux_solar_az']
+    el = field.results['sp_parameters']['fluxsim.0.flux_solar_el']
+    h0 = field.heliostats[0]
 
-    # ST_df = individual_heliostat_results(field, PT)
-    # print("Total power to receiver from heliostat calculations: {:.2f} (kW)".format(ST_df['power_to_receiver'].sum()))
+    print("before  aim:", h0.aim_point, " facet aim:", h0.facets[0].aim, " track el: %.4f" % h0.tracking_elevation)
+    simulate_soltrace(PT, dni = 950., nray = 1e5, seed = 123, nthreads = 1)
+    res_A = process_soltrace_results(PT, field.field_area)
+    z_A = PT.raydata[PT.raydata['stage'] == 2]['loc_z'].mean()
 
+    for h in field.heliostats:
+        h.aim_point = Point(h.aim_point.x, h.aim_point.y, h.aim_point.z + 1.0)
+        h.update_geometry(PT, az, el)
+    print("after   aim:", h0.aim_point, " facet aim:", h0.facets[0].aim, " track el: %.4f" % h0.tracking_elevation)
+    simulate_soltrace(PT, dni = 950., nray = 1e5, seed = 123, nthreads = 1)
+    res_B = process_soltrace_results(PT, field.field_area)
+    z_B = PT.raydata[PT.raydata['stage'] == 2]['loc_z'].mean()
+
+    for key in ['Absorbed power (kW)', 'Intercept efficiency (%)']:
+        print(f"{key:28s}  A: {res_A[key]:10.2f}   B: {res_B[key]:10.2f}")
+    print(f"{'mean hit height on receiver':28s}  A: {z_A:10.4f}   B: {z_B:10.4f}")
+    raise SystemExit
+    
     if False:
         weather_data = pd.read_csv(field.weather_file, skiprows=2)
         resource_data = weather_data[weather_data['DNI'] > 10.].reset_index()
@@ -131,6 +146,21 @@ if __name__ == "__main__":
         # plt.show()
         plt.savefig(results_dir + 'dni_distribution_comparison.png', dpi=300)
 
+    # Print aim points in the results
+    aim_df = pd.DataFrame([{
+        'helio_id': i,
+        'x_location': h.position.x,
+        'y_location': h.position.y,
+        'z_location': h.position.z,
+        'x_aimpoint': h.aim_point.x,
+        'y_aimpoint': h.aim_point.y,
+        'z_aimpoint': h.aim_point.z,
+        'focal_length': h.focal_length,
+        'slant_range': ((h.aim_point.x - h.position.x)**2
+                        + (h.aim_point.y - h.position.y)**2
+                        + (h.aim_point.z - h.position.z)**2)**0.5,
+    } for i, h in enumerate(field.heliostats)])
+    aim_df.to_csv(results_dir + 'aimpoints.csv', index=False)
 
     # Time-series simulation
     print("Number of simulation time steps: {:d}".format(len(field.results['sp_sim_data'])))
