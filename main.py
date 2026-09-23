@@ -3,10 +3,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 NRAYS = 0.5e6
 
-
-
-
-
 def individual_heliostat_results(field: Heliostat_Field, PT: PySolTrace):
     # NOTE: This can take a while with many heliostats
     ST_results = {'power_to_receiver': list(),

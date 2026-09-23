@@ -1,7 +1,7 @@
 # This is the physics 
 
 #   build_field    -> "Build field, once"
-#   receiver_axes  -> helper for the Action box (which way is "up" on the plate)
+#   receiver_axes  ->  helper for the Action box (which way is "up" on the plate)
 #   set_aims       -> "Action space"
 #   trace          -> "Ray trace"
 

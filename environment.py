@@ -10,7 +10,6 @@
 import numpy as np
 from helio_env import build_field, receiver_axes, set_aims, trace, sun_at
 
-
 class AimingEnv:
 
     def __init__(self, dt_min=1.0, slew_m_per_min=0.2, nray=1e5, peak_limit_kw_m2=900.0):
@@ -45,7 +44,7 @@ class AimingEnv:
         # d_offsets : array (n, 2), requested change in (dx, dv) per heliostat, meters.
         # Returns (obs, metrics, done, why).
 
-        # Action space: clip to what the actuators can do in one step
+        # Action space: clip to what the actuators can do in one step #ask Bill
         lim = self.slew * self.dt
         self.offsets = self.offsets + np.clip(d_offsets, -lim, lim)
         set_aims(self.field, self.offsets, self.axes)
@@ -85,7 +84,6 @@ class AimingEnv:
         if m['sun_el'] < 7.0:
             return True, 'sun_down'
         return False, ''
-
 
 if __name__ == "__main__":
     # The sun moves, the aims do not.
