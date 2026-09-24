@@ -6,8 +6,8 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-from environment import AimingEnv
-from helio_env import set_aims, trace, sun_at
+from environment_class import AimingEnv
+from functions_4_environment import set_aims, trace, sun_at
 
 LIMIT = 1000.0   # kW/m2, the hard limit from step 4
 

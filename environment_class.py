@@ -8,24 +8,25 @@
 # No reward and no receiver thermal yet.
 
 import numpy as np
-from helio_env import build_field, receiver_axes, set_aims, trace, sun_at
+from functions_4_environment import build_field, receiver_axes, aim_grid, set_aims_discrete, trace, sun_at
 
 class AimingEnv:
 
-    def __init__(self, dt_min=1.0, slew_m_per_min=0.2, nray=1e5, peak_limit_kw_m2=900.0):
+    def __init__(self, dt_min=1.0, nray=1e5, peak_limit_kw_m2=900.0):
         # Build field, once. This is the slow part and it never repeats.
         self.field, self.PT = build_field()
         self.axes = receiver_axes(self.field)
         self.n = len(self.field.heliostats)
-
+        self.grid = aim_grid(self.field, n_cols=3, n_rows=4, margin=0.5)
+        
         self.dt = dt_min                    # minutes of plant time per step
-        self.slew = slew_m_per_min          # max aim point travel per minute, actuator limit
         self.nray = nray
         self.peak_limit = peak_limit_kw_m2  # hard limit, ends the episode if exceeded
 
         # state, filled by reset()
         self.day = None
         self.hour = None
+        self.choice = None # One integer per heliostat. 12 options. 
         self.offsets = None
         self.last = None
 
@@ -35,19 +36,19 @@ class AimingEnv:
         rng = np.random.default_rng(seed)
         self.day = day
         self.hour = hour + rng.uniform(0.0, 0.5)     # random start within 30 min
-        self.offsets = np.zeros((self.n, 2))         # everyone at plate center
+        self.choice = np.full(self.n, 4)
+        self.offsets = set_aims_discrete(self.field, self.choice, self.grid, self.axes)
         self.last = dict(power_kw=0.0, peak_kw_m2=0.0, intercept=0.0)
         return self._obs()
 
     # ---- one step: Action -> Ray trace -> Terminal ------------------------
-    def step(self, d_offsets):
-        # d_offsets : array (n, 2), requested change in (dx, dv) per heliostat, meters.
+    def step(self, choice):
+        # Choice : array (n,) of ints 0..11, menu point per heliostat..
         # Returns (obs, metrics, done, why).
 
-        # Action space: clip to what the actuators can do in one step #ask Bill
-        lim = self.slew * self.dt
-        self.offsets = self.offsets + np.clip(d_offsets, -lim, lim)
-        set_aims(self.field, self.offsets, self.axes)
+        # Action: put every heliostat on its grid point
+        self.choice = np.asarray(choice, dtype = int)
+        self.offsets = set_aims_discrete(self.field, self.choice, self.grid, self.axes)
 
         # Clock
         self.hour += self.dt / 60.0
@@ -94,7 +95,7 @@ if __name__ == "__main__":
 
     for k in range(5):
         t0 = time.time()
-        obs, m, done, why = env.step(np.zeros((env.n, 2)))
+        obs, m, done, why = env.step(np.full(env.n, 4))
         print(f"step {k}  hour {env.hour:7.4f}  power {m['power_kw']:8.1f}"
               f"  peak {m['peak_kw_m2']:7.1f}  done={done} {why}  ({time.time()-t0:.1f} s)")
         if done:

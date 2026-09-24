@@ -59,6 +59,37 @@ def set_aims(field, offsets, axes):
     center, u_h, u_v = axes
     for h, (dx, dv) in zip(field.heliostats, offsets):
         h.aim_point = Point(*(center + dx * u_h + dv * u_v))
+        
+# dv and dx on the plate , tranform to global xyz aim poin
+
+def offsets_to_xyz(offsets, axes): # aim point destination
+    center, u_h, u_v = axes
+    o = np.asarray(offsets, dtype=float)
+    return center + o[:, [0]] * u_h + o[:, [11]] * u_v # center + dx sideways + dv up
+
+# Write one xyz aim point into each heliostat; update geometry() reads it on the next trace ()
+
+def set_aim_xyz(field, xyz): # aimpoint current positon
+    for h, p in zip(field.heliostats, xyz):
+        h.aim_point = Point(*p)
+        
+# Discrete aim points
+
+def aim_grid(field, n_cols = 3, n_rows = 4, margin = 0.5):
+    p = field.results['sp_parameters']
+    W, H = p['receiver.0.rec_width'], p['receiver.0.rec_height']    # 4 m, 4 m
+    xs = np.linspace(-W / 2 + margin, W / 2 - margin, n_cols)       # left to right
+    vs = np.linspace(-H / 2 + margin, H / 2 - margin, n_rows)       # bottom to top
+    grid = np.array([(x, v) for v in vs for x in xs])               # k = row * n_cols + col
+    return grid
+
+# Looks up each mirror's (dx, dv) in the menu, then hands the result to the continuous set_aims, which does the conversion to aim_point as before.
+# Returns the offsets array so the environment can keep it as state.
+
+def set_aims_discrete(field, choice, grid, axes):
+    offsets = grid[np.asarray(choice, dtype=int)]
+    set_aims(field, offsets, axes)
+    return offsets
 
 # The Ray trace box. One sun position in, flux out. No decisions here. 
 # 1. Point every mirror at its aim_point for this sun
@@ -93,14 +124,23 @@ def sun_at(day, hour):
 if __name__ == "__main__":    
     field, PT = build_field()
     axes = receiver_axes(field)
-    offsets = np.zeros((len(field.heliostats), 2))   # everyone at plate center
-    set_aims(field, offsets, axes)
-
-    day = 172                                        # June 21
-    for hour in [8.0, 8.0 + 1/60, 8.0 + 2/60]:       # 8:00, 8:01, 8:02 solar time
-        az, el = sun_at(day, hour)
-        res, flux = trace(PT, field, az, el)
-        print(f"hour {hour:7.4f}  az {az:7.2f}  el {el:6.2f}"
-              f"  power {res['Absorbed power (kW)']:9.1f}  peak {flux.max():8.1f}")
+    grid = aim_grid(field, n_cols=3, n_rows=4, margin=1)
+    n = len(field.heliostats)
     
-
+    print("aim menu, k: (dx,dv) in meters")
+    for k, (dx, dv) in enumerate(grid):
+        print(f"  {k:2d}: ({dx:5.2f}, {dv:5.2f})")
+        
+    az, el = sun_at(172, 9.0)
+    
+    # A: every mirror on point 4, the reastest the center
+    set_aims_discrete(field, np.full(n,4), grid, axes)
+    res_A, flux_A = trace(PT, field, az, el)
+    
+    # B: mirrors dealt around all 12 points in turn
+    set_aims_discrete(field, np.arange(n) % len(grid), grid, axes)
+    res_B, flux_B = trace(PT, field, az, el)
+    
+    for key in ['Absorbed power (kW)', 'Intercept efficiency (%)']:
+        print(f"{key:28s}  A: {res_A[key]:10.2f}   B: {res_B[key]:10.2f}")
+    print(f"{'peak flux on plate (kW/m2)':28s}  A: {flux_A.max():10.2f}   B: {flux_B.max():10.2f}")
