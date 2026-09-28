@@ -17,16 +17,16 @@ from api.pysoltrace import Point
 def build_field():
     
     field = Heliostat_Field()
-    field.rec_design_power = 12.0     # MWt
-    field.tower_height = 50.0         # m
-    field.rec_type = 2                # flat plate
-    field.rec_height = 4.0            # m
-    field.rec_width = 4.0             # m
-    field.rec_elevation = -30.0       # deg, plate tilts down toward the field
-    field.helio_height = 3.0          # m
-    field.helio_width = 4.55          # m
-    field.helio_n_cant_x = 2          # two mirror facets side by side
-    field.helio_n_cant_y = 1
+    field.rec_design_power = 2.0      # MWt, G3P3 design power to the aperture
+    field.tower_height = 35.0         # m, G3P3 tower (115 ft)
+    field.rec_type = 2                # flat plate = the cavity aperture plane
+    field.rec_height = 2           # m, square aperture, 1.74 m2
+    field.rec_width = 2          # m
+    field.rec_elevation = 0.0         # deg, vertical aperture facing north
+    field.helio_height = 6.1          # m, NSTTF heliostat, 25 facets of 1.22 m
+    field.helio_width = 6.1           # m
+    field.helio_n_cant_x = 5
+    field.helio_n_cant_y = 5
     field.helio_surf_err = 0.002      # rad
     field.helio_cant_method = 0
     field.helio_focus_method = 1
@@ -65,7 +65,7 @@ def set_aims(field, offsets, axes):
 def offsets_to_xyz(offsets, axes): # aim point destination
     center, u_h, u_v = axes
     o = np.asarray(offsets, dtype=float)
-    return center + o[:, [0]] * u_h + o[:, [11]] * u_v # center + dx sideways + dv up
+    return center + o[:, [0]] * u_h + o[:, [1]] * u_v # center + dx sideways + dv up
 
 # Write one xyz aim point into each heliostat; update geometry() reads it on the next trace ()
 
@@ -75,7 +75,7 @@ def set_aim_xyz(field, xyz): # aimpoint current positon
         
 # Discrete aim points
 
-def aim_grid(field, n_cols = 3, n_rows = 4, margin = 0.5):
+def aim_grid(field, n_cols = 3, n_rows = 4, margin = 0.15):
     p = field.results['sp_parameters']
     W, H = p['receiver.0.rec_width'], p['receiver.0.rec_height']    # 4 m, 4 m
     xs = np.linspace(-W / 2 + margin, W / 2 - margin, n_cols)       # left to right
@@ -115,7 +115,7 @@ def trace(PT, field, sun_az, sun_el, nray = 1e5, dni = 950):
 
 from util import sun_position
 
-LATITUDE = 34.85 # Dagget, CA
+LATITUDE = 34.96 # SANDIA
 
 def sun_at(day, hour):
     return sun_position(LATITUDE, day, hour)
