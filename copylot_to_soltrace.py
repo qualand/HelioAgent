@@ -13,6 +13,7 @@ from multiprocessing import Pool
 from api.copylot import CoPylot
 from api.pysoltrace import PySolTrace, Point
 from heliostat import heliostat
+from snout import add_snout
 
 plt.rcParams['font.size'] = 15.0
 plt.rcParams['font.sans-serif'] = 'Arial'
@@ -49,7 +50,9 @@ class Heliostat_Field:
         self.rec_elevation = 0.0        # Receiver orientation elevation (deg)
         self.rec_azimuth = 0.0          # Receiver orientation azimuth (deg)
         self.rec_solar_abs = 0.94       # Solar absorptivity
-
+        self.snout = None
+        self.snout_panels = []
+        
         # Heliostat -> Ivanpah-like defaults
         self.helio_height = 12.2        # Heliostat height (m)
         self.helio_width = 12.2         # Heliostat width (m)
@@ -441,6 +444,9 @@ class Heliostat_Field:
         opt_rec.front.reflectivity = 1.0 - sp_params['receiver.0.absorptance']
         opt_rec.front.dist_type = 'f'
         set_back_optics_to_front(opt_rec)
+        
+        if self.snout is not None:
+            self.snout_stage, self.snout_panels = add_snout(PT, sp_params, self.snout, opt_black)
 
         #--- Add Receiver
         st_rec = PT.add_stage()
@@ -604,15 +610,16 @@ def process_soltrace_results(PT: PySolTrace, fieldArea, fluxBinNx:int = 25, flux
         'Field efficiency w/o receiver (%)'
     """
     rayData = PT.raydata
+    rec_id = len(PT.stages) # receiver is always the last stage
 
     results = {}
-    rec_stage = rayData[rayData['stage'] == 2]
+    rec_stage = rayData[rayData['stage'] == rec_id]
     # absorbed by the receiver
     abs_power = len(rec_stage[rec_stage['element'] == -1]) * PT.powerperray / 1.e3
     results['Absorbed power (kW)'] = abs_power
     results['Field efficiency (%)'] = abs_power * 100. / (fieldArea * PT.dni / 1.e3)
 
-    flux_st = PT.bin_rays(PT.stages[-1].elements[-1], nx=fluxBinNx, ny=fluxBinNy)
+    flux_st = PT.bin_rays(PT.stages[-1].elements[0], nx=fluxBinNx, ny=fluxBinNy)
     results['Max flux (kW/m^2)'] = flux_st.max() / 1.e3
     results['Average flux (kW/m^2)'] = flux_st.mean() / 1.e3
 
@@ -659,7 +666,7 @@ def process_soltrace_results(PT: PySolTrace, fieldArea, fluxBinNx:int = 25, flux
     fieldSingleHits = field_stage[field_stage['number'].isin(single_hits)]
     nhabs = len(fieldSingleHits[fieldSingleHits['element'] < 0])    # Rays absorbed by heliostats
 
-    rec_stage = rayData[rayData['stage'] == 2]
+    rec_stage = rayData[rayData['stage'] == rec_id]
     nrin = len(rec_stage[(rec_stage['element'] == 1) | (rec_stage['element'] == -1)])   # Rays that hit the receiver
     nrabs = len(rec_stage[rec_stage['element'] == -1])              # Rays absorbed by the receiver
     nhout = nhin - nhblock - nhabs                                  # Rays that leave the heliostat field

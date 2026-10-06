@@ -8,6 +8,7 @@
 import numpy as np
 from copylot_to_soltrace import Heliostat_Field, simulate_soltrace, process_soltrace_results
 from api.pysoltrace import Point
+from snout import snout_results
 
 # Build the plant once. Same defaults as main.py
 # SolarPILOT decides where the heliostats stand
@@ -16,24 +17,27 @@ from api.pysoltrace import Point
     
 def build_field():
     
-    field = Heliostat_Field()
     field.rec_design_power = 2.0      # MWt, G3P3 design power to the aperture
     field.tower_height = 35.0         # m, G3P3 tower (115 ft)
     field.rec_type = 2                # flat plate = the cavity aperture plane
-    field.rec_height = 2           # m, square aperture, 1.74 m2
-    field.rec_width = 2          # m
+    field.rec_height = 1.32           # m, G3P3 square aperture (Mills et al. 2024, Fig. 4b)
+    field.rec_width = 1.32            # m
+    field.snout = dict(depth=0.70, horiz=96.0, top=0.0, bot=34.0)   # G3P3 SNOUT, Mills et al. 2024 Fig. 5a
     field.rec_elevation = 0.0         # deg, vertical aperture facing north
     field.helio_height = 6.1          # m, NSTTF heliostat, 25 facets of 1.22 m
     field.helio_width = 6.1           # m
     field.helio_n_cant_x = 5
     field.helio_n_cant_y = 5
-    field.helio_surf_err = 0.002      # rad
     field.helio_cant_method = 0
     field.helio_focus_method = 1
     field.n_focus_bands = 3
     field.aim_method = 3              # SolarPILOT's own aiming; we overwrite it later
     field.des_sim_ndays = 4           # fewer design days = faster layout
     field.des_sim_nhours = 2
+    field.helio_reflectivity = 0.885  # effective mirror reflectivity, Mills et al. 2024 Table 1
+    field.helio_soiling = 1.0         # soiling is already inside the 0.885
+    field.helio_surf_err = 0.0012     # rad, 1.2 mrad slope error, Table 1
+    field.helio_reflect_err = 0.00005 # rad, 0.05 mrad specularity error, Table 1
     field.generate_field_via_copylot(display_results=False)
     PT = field.set_up_soltrace()
     
@@ -103,6 +107,10 @@ def trace(PT, field, sun_az, sun_el, nray = 1e5, dni = 950):
         h.update_geometry(PT, sun_az, sun_el)
     simulate_soltrace(PT, dni=dni, nray=nray, seed=123, nthreads=1)
     res = process_soltrace_results(PT, field.field_area)
+    
+    if field.snout is not None:
+        res.update(snout_results(PT, field.snout_panels))
+        
     plate = PT.stages[-1].elements[0]
     flux = PT.bin_rays(plate, nx=25, ny=25) / 1e3
     return res, flux

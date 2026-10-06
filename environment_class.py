@@ -80,6 +80,8 @@ class AimingEnv:
             peak_kw_m2=float(flux.max()),
             intercept=res['Intercept efficiency (%)'] / 100.0,
             sun_el=el,
+            snout_kw=np.array([res[f'SNOUT {p} absorbed (kW)'] for p in ('top', 'bottom', 'east', 'west')]),
+            snout_peak_kw_m2=max(res[f'SNOUT {p} peak flux (kW/m^2)'] for p in ('top', 'bottom', 'east', 'west')),
         )
         self.last = metrics
 
