@@ -1,5 +1,5 @@
 # Four flat opaque panels in on trace-through stage between the field and the receiver.
-# Rays that hit a panel are lost; rays that miss all panels continue to the receiver. 
+# Rays that hit a panel are 20% absorbed and 80% scattered diffusely (Mills et al. 2024); scattered rays can hit another panel or go on to the receiver.
 #   depth [m]        aperture plane to SNOUT front plane
 #   horiz [deg]      full angle between the east and west panels
 #   top, bot [deg]   tilt of the top and bottom panels from the aperture normal, + = down toward the field

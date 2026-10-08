@@ -17,6 +17,7 @@ from snout import snout_results
     
 def build_field():
     
+    field = Heliostat_Field()
     field.rec_design_power = 2.0      # MWt, G3P3 design power to the aperture
     field.tower_height = 35.0         # m, G3P3 tower (115 ft)
     field.rec_type = 2                # flat plate = the cavity aperture plane
@@ -105,6 +106,7 @@ def set_aims_discrete(field, choice, grid, axes):
 def trace(PT, field, sun_az, sun_el, nray = 1e5, dni = 950):
     for h in field.heliostats:
         h.update_geometry(PT, sun_az, sun_el)
+    #PT.write_soltrace_input_file('g3p3_snout.stinput')
     simulate_soltrace(PT, dni=dni, nray=nray, seed=123, nthreads=1)
     res = process_soltrace_results(PT, field.field_area)
     

@@ -446,7 +446,13 @@ class Heliostat_Field:
         set_back_optics_to_front(opt_rec)
         
         if self.snout is not None:
-            self.snout_stage, self.snout_panels = add_snout(PT, sp_params, self.snout, opt_black)
+            opt_snout = PT.add_optic('SNOUT Surface')
+            opt_snout.front.dist_type = 'f'
+            opt_snout.front.reflectivity = 0.8
+            opt_snout.front.slope_error = 0.00001
+            opt_snout.front.spec_error = 1000.
+            set_back_optics_to_front(opt_snout)
+            self.snout_stage, self.snout_panels = add_snout(PT, sp_params, self.snout, opt_snout)
 
         #--- Add Receiver
         st_rec = PT.add_stage()
@@ -501,7 +507,6 @@ class Heliostat_Field:
             back_surface.aperture_rectangle(50.0, 50.0)
             back_surface.optic = opt_rec
             back_surface.surface_flat()
-
 
         # Set receiver to heliostats
         for h in self.heliostats:
