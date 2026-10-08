@@ -6,9 +6,13 @@
 #   trace          -> "Ray trace"
 
 import numpy as np
+import pandas as pd
 from copylot_to_soltrace import Heliostat_Field, simulate_soltrace, process_soltrace_results
 from api.pysoltrace import Point
-from snout import snout_results
+from snout_soltrace import snout_results
+from receiver_soltrace import curtain_flux 
+from receiver_thermal import ReceiverThermal
+
 
 # Build the plant once. Same defaults as main.py
 # SolarPILOT decides where the heliostats stand
@@ -16,32 +20,29 @@ from snout import snout_results
 # Returns the field object (list of heliostats) and PT (the SolTrace scene)\
     
 def build_field():
-    
     field = Heliostat_Field()
-    field.rec_design_power = 2.0      # MWt, G3P3 design power to the aperture
-    field.tower_height = 35.0         # m, G3P3 tower (115 ft)
-    field.rec_type = 2                # flat plate = the cavity aperture plane
-    field.rec_height = 1.32           # m, G3P3 square aperture (Mills et al. 2024, Fig. 4b)
-    field.rec_width = 1.32            # m
-    field.snout = dict(depth=0.70, horiz=96.0, top=0.0, bot=34.0)   # G3P3 SNOUT, Mills et al. 2024 Fig. 5a
-    field.rec_elevation = 0.0         # deg, vertical aperture facing north
-    field.helio_height = 6.1          # m, NSTTF heliostat, 25 facets of 1.22 m
-    field.helio_width = 6.1           # m
+    field.tower_height = 35.0
+    field.rec_type = 3
+    field.rec_height = 1.32
+    field.rec_width = 1.32
+    field.rec_elevation = 0.0
+    field.rec_azimuth = 21.2
+    field.cavity = dict(height_ratio=1.1, width_ratio=1.1, curtain_depth=0.5, tower_face=10.0)
+    field.snout = dict(depth=0.70, horiz=96.0, top=0.0, bot=34.0)
+    field.helio_height = 6.1
+    field.helio_width = 6.1
     field.helio_n_cant_x = 5
     field.helio_n_cant_y = 5
-    field.helio_cant_method = 0
     field.helio_focus_method = 1
     field.n_focus_bands = 3
-    field.aim_method = 3              # SolarPILOT's own aiming; we overwrite it later
-    field.des_sim_ndays = 4           # fewer design days = faster layout
-    field.des_sim_nhours = 2
-    field.helio_reflectivity = 0.885  # effective mirror reflectivity, Mills et al. 2024 Table 1
-    field.helio_soiling = 1.0         # soiling is already inside the 0.885
-    field.helio_surf_err = 0.0012     # rad, 1.2 mrad slope error, Table 1
-    field.helio_reflect_err = 0.00005 # rad, 0.05 mrad specularity error, Table 1
-    field.generate_field_via_copylot(display_results=False)
+    field.helio_reflectivity = 0.885
+    field.helio_soiling = 1.0
+    field.helio_surf_err = 0.0050
+    field.helio_reflect_err = 0.00012
+    layout = pd.read_csv('NSTTF_Heliostats_origin_at_torque_tube.csv')
+    field.set_layout(layout['X'].values + 40.0, layout['Y'].values - 8.0, layout['Z'].values)
     PT = field.set_up_soltrace()
-    
+    field.thermal = ReceiverThermal()
     return field, PT
 
 # The plate is tilted, so "1 m on the plate" is not "1 m up in z"
@@ -113,8 +114,8 @@ def trace(PT, field, sun_az, sun_el, nray = 1e5, dni = 950):
     if field.snout is not None:
         res.update(snout_results(PT, field.snout_panels))
         
-    plate = PT.stages[-1].elements[0]
-    flux = PT.bin_rays(plate, nx=25, ny=25) / 1e3
+    flux = curtain_flux(PT, field.curtain, n_height=25, n_width=25)
+    res.update(field.thermal.step(flux))
     return res, flux
 
 ############################################################################################################################

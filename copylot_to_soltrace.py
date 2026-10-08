@@ -9,18 +9,16 @@ import time
 import copy
 import pickle
 from multiprocessing import Pool
-
-from api.copylot import CoPylot
 from api.pysoltrace import PySolTrace, Point
 from heliostat import heliostat
-from snout import add_snout
+from snout_soltrace import add_snout
+from receiver_soltrace import add_particle_receiver
 
 plt.rcParams['font.size'] = 15.0
 plt.rcParams['font.sans-serif'] = 'Arial'
 plt.rcParams['axes.linewidth'] = 0.5
 plt.rcParams['xtick.major.width'] = 0.5
 plt.rcParams['ytick.major.width'] = 0.5
-
 
 class Heliostat_Field:
 
@@ -52,6 +50,8 @@ class Heliostat_Field:
         self.rec_solar_abs = 0.94       # Solar absorptivity
         self.snout = None
         self.snout_panels = []
+        self.cavity = None
+        self.curtain = None
         
         # Heliostat -> Ivanpah-like defaults
         self.helio_height = 12.2        # Heliostat height (m)
@@ -186,55 +186,22 @@ class Heliostat_Field:
             D['ambient.0.atm_coefs'] = [[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]]  # Atmospheric attenuation coefficients
         return D
 
-    #---- Run SolarPILOT using current parameters. All parameters not specified will use SolarPILOT defaults
-    def generate_field_via_copylot(self, display_results = False):
-        cp = CoPylot()
-        data = cp.data_create()
-
-        R = {}
-        R['sp_parameters'] = self.get_solarpilot_parameters()  # Create dictionary based on current parameters
-
-        if (not cp.set_data(data, R['sp_parameters'])):
-            raise Exception("Failed to set some variables within SolarPILOT.")
-
-        #--- Generate heliostat field layout (default SolarPILOT settings use summer solstice solar noon as design point, simple aim points)
-        if display_results:
-            print('Generating heliostat field layout via SolarPILOT...')
-        cp.generate_layout(data)  # Generate field layout - NOTE: This can be very slow and memory intensive for large number of heliostats
-        # TODO: We would need to update focal lengths here if using focal bands... and regenerate layout
-
-        if display_results:
-            print('Simulating heliostat field via SolarPILOT...')
-
-        #--- Simulate heliostat field performance to get flux map and aimpoints
-        #NOTE: could skip this if not using SolarPILOT aiming...
-        cp.simulate(data)                                   # Simulate flux
-        R['sp_incident_flux'] = np.array(cp.get_fluxmap(data))       # NOTE: flux maps are incident flux maps,  not absorbed
-        R['sp_summary'] = cp.summary_results(data)
-        R['sp_detailed_field'] = cp.detail_results(data)
-
-        if R['sp_detailed_field'] is None:
-            raise Exception("SolarPILOT failed to generate heliostat field!")
-
-        # Get simulation data from weather file
-        R['sp_sim_data'] = pd.DataFrame(cp.generate_weather_simulation_data(data, self.des_sim_detail))
-        R['sp_sim_data'].columns = ['month', 'day', 'hour', 'dni', 'temp', 'wind', 'step_weight', 'azimuth', 'zenith']
-        R['sp_sim_data'] = R['sp_sim_data'][(R['sp_sim_data']['dni'] > 0.0) & (R['sp_sim_data']['zenith'] < 80.0)]          # Filtering out zero DNI and low solar angles
-        R['sp_sim_data'].reset_index(inplace=True)
-
-        if display_results:
-            print('Layout results from SolarPILOT:')
-            cp.summary_results(data, False)
-            print(' ')
-
-        self.results = R
-
-        # Attenuation and focal lengths information for SolTrace setup
+    #--- Fixed layout. x east, y north, z pivot height, m from the tower base
+    def set_layout(self, x, y, z):
+        x, y, z = (np.asarray(v, dtype=float) for v in (x, y, z))
+        aim = np.array([0.0, 0.0, self.tower_height])
+        distance_km = np.sqrt((x - aim[0])**2 + (y - aim[1])**2 + (z - aim[2])**2) / 1000.0
+        if self.include_attenuation:   # DELSOL3 clear day, same model SolarPILOT used
+            attenuation = 1.0 - (0.006789 + 0.1046 * distance_km - 0.0170 * distance_km**2 + 0.002845 * distance_km**3)
+        else:
+            attenuation = np.ones_like(distance_km)
+        self.results = {'sp_parameters': self.get_solarpilot_parameters()}
+        self.results['sp_detailed_field'] = pd.DataFrame(dict(x_location=x, y_location=y, z_location=z,
+                                                              x_aimpoint=aim[0], y_aimpoint=aim[1], z_aimpoint=aim[2],
+                                                              attenuation=attenuation))
         self.results['st_field_info'] = dict()
         self.results['st_field_info'].update(self.create_attenuation_groups())
         self.results['st_field_info'].update(self.create_focal_lengths(numFocalBands=self.n_focus_bands))
-
-        cp.data_free(data)
 
     #--- create attenuation groups
     def create_attenuation_groups(self):
@@ -422,7 +389,7 @@ class Heliostat_Field:
             focal_length = st_field_info['helio_focal_length'][i]   # Assuming same focal length in both x and y directions
             ## TODO: canting methods?
 
-            helio = heliostat(position, aperture_size, number_panels, gaps, focal_length, aim_point)
+            helio = heliostat(position, aperture_size, number_panels, gaps, focal_length, aim_point, onaxis_canting_distance=focal_length)
             mirror_optic = opth[st_field_info['attenuation_id'][i]] if self.include_attenuation else opth
             helio.create_geometry(PT, mirror_optic)
             self.heliostats.append(helio)
@@ -455,6 +422,12 @@ class Heliostat_Field:
             self.snout_stage, self.snout_panels = add_snout(PT, sp_params, self.snout, opt_snout)
 
         #--- Add Receiver
+        if sp_params['receiver.0.rec_type'] == 3:          # Falling particle: curtain behind the aperture, tower face around it
+            self.receiver_stage, self.curtain = add_particle_receiver(PT, sp_params, self.cavity, opt_black)
+            for h in self.heliostats:
+                h.set_receiver(self.curtain['element'])
+            return PT
+        
         st_rec = PT.add_stage()
         st_rec.name = 'Receiver'
         st_rec.is_virtual = False

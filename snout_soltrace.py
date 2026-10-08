@@ -108,7 +108,6 @@ def add_snout(PT, sp_params, snout, optic):
         panels.append(dict(name=panel_name, element=panel, centroid=centroid, rotation=rotation, local_xy=local_xy))
     return snout_stage, panels
 
-
 # True for the points (local x-y) that lie inside a convex quadrilateral given counter-clockwise
 def inside_quadrilateral(corners_xy, points_xy):
     inside = np.ones(len(points_xy), dtype=bool)
@@ -117,7 +116,6 @@ def inside_quadrilateral(corners_xy, points_xy):
         cross = (end[0] - start[0]) * (points_xy[:, 1] - start[1]) - (end[1] - start[1]) * (points_xy[:, 0] - start[0])
         inside &= cross >= -1e-12
     return inside
-
 
 # Incident flux map [kW/m2] on one SNOUT panel from the last trace, on an nbins x nbins grid.
 # Same idea as PT.bin_rays(): count the ray hits in each cell and divide by the cell area.
@@ -148,7 +146,6 @@ def panel_flux_map(PT, panel, nbins=10, subsamples=8):
 
     flux = np.where(fraction_inside > 0.25, counts * PT.powerperray / np.maximum(cell_area, 1e-12), 0.0)
     return flux / 1e3
-
 
 # Absorbed power [kW] and peak incident flux [kW/m2] on each panel from the last trace
 def snout_results(PT, panels):
