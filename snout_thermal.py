@@ -4,10 +4,11 @@
 
 import numpy as np
 from snout_soltrace import snout_corners, inside_quadrilateral
+import os
 
 SIGMA = 5.6704e-8   # Stefan-Boltzmann constant (W/m2/K4)
 
-# RSLE-5 face sheet over Duraboard HD backing
+# RSLE-57 face sheet, back face exposed to outside air
 
 RSLE57 = dict(
     density=2100.0,             # kg/m3
@@ -16,7 +17,6 @@ RSLE57 = dict(
     thickness=0.025,            # m, face sheet               TODO confirm
     solar_absorptivity=0.2,     # 1 - 0.8 solar reflectivity (Bill's SNOUT optic)
     ir_emissivity=0.8,          # infrared emissivity         TODO confirm
-    backing_r=0.5,              # m2K/W, Duraboard + air film TODO confirm
     max_temp_c=1200.0,          # RSLE-57 use limit, the constraint that matters
 )
 
@@ -35,8 +35,8 @@ class SnoutThermal:
         m = self.material
         self.heat_capacity = m['density'] * m['specific_heat'] * m['thickness']   # J/m2/K
         
-        # Conduction from the hot inside face, through the RSLE sheet and the backing, to outside air
-        self.r_out = m['thickness'] / m['conductivity'] + m['backing_r']          # m2K/W
+        # Conduction from the hot inside face through the RSLE sheet to outside air
+        self.r_out = m['thickness'] / m['conductivity']                           # m2K/W
         
         self.wall_temp_k = None     # wall temperatures live between steps (transient)
         
@@ -215,6 +215,10 @@ class SnoutThermal:
         K = np.eye(self.n_surfaces) - self.rho[:, None] * self.vf
         self.Kinv = np.linalg.inv(K)
         
+    def reset(self, ambient_c=20.0):
+        # Walls start at ambient, the cold-start condition
+        self.wall_temp_k = np.full(len(self.cells), ambient_c + 273.15)
+
     # One environment step. flux_maps: the 4 arrays from panel_flux_map(PT, panel,
     # nbins=n_grid), panel order as in add_snout, incident solar in kW/m2.
     # t_aperture_c: temperature of the hot cavity seen through the aperture.
