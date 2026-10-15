@@ -423,7 +423,7 @@ class Heliostat_Field:
 
         #--- Add Receiver
         if sp_params['receiver.0.rec_type'] == 3:          # Falling particle: curtain behind the aperture, tower face around it
-            self.receiver_stage, self.curtain = add_particle_receiver(PT, sp_params, self.cavity, opt_black)
+            self.receiver_stage, self.curtain = add_particle_receiver(PT, sp_params, self.cavity, opt_black, self.opt_snout)
             for h in self.heliostats:
                 h.set_receiver(self.curtain['element'])
             return PT

@@ -4,6 +4,7 @@
 
 import numpy as np
 from snout_soltrace import snout_corners, inside_quadrilateral
+from viewfactor import view_factor, polygon_area, clean_polygon
 import os
 
 SIGMA = 5.6704e-8   # Stefan-Boltzmann constant (W/m2/K4)
@@ -20,28 +21,54 @@ RSLE57 = dict(
     max_temp_c=1200.0,          # RSLE-57 use limit, the constraint that matters
 )
 
+
+def clip_cell(rect, trapezoid):
+    # Cut a grid rectangle down to its part inside the panel trapezoid
+    # (Sutherland-Hodgman: clip against each edge of the convex trapezoid in turn)
+    def cross2(a, b):
+        return a[0] * b[1] - a[1] * b[0]
+    output = [np.array(p, dtype=float) for p in rect]
+    for k in range(len(trapezoid)):
+        a, b = np.array(trapezoid[k]), np.array(trapezoid[(k + 1) % len(trapezoid)])
+        edge = b - a
+        def inside(p):      # left of the edge, for a counterclockwise trapezoid
+            return edge[0] * (p[1] - a[1]) - edge[1] * (p[0] - a[0]) >= -1e-12
+        kept, output = output, []
+        for idx in range(len(kept)):
+            cur, prev = kept[idx], kept[idx - 1]
+            if inside(cur):
+                if not inside(prev):   # edge crossed coming in: add the crossing point
+                    t = cross2(a - prev, edge) / cross2(cur - prev, edge)
+                    output.append(prev + t * (cur - prev))
+                output.append(cur)
+            elif inside(prev):         # edge crossed going out: add the crossing point
+                t = cross2(a - prev, edge) / cross2(cur - prev, edge)
+                output.append(prev + t * (cur - prev))
+    return clean_polygon(output)
+
+
 class SnoutThermal:
-    # panels: the list returned by add_snout. n_grid must match the nbins useing in 
-    # panel_flux_map, so a solar flux cell and a thermal cell are the same cell. 
+    # panels: the list returned by add_snout. n_grid must match the nbins used in
+    # panel_flux_map, so a solar flux cell and a thermal cell are the same cell.
     def __init__(self, sp_params, snout, panels, material=None, n_grid=4,
-                 n_rays=20000, vf_file='snout_view_factors.npz', seed=1):
+                 vf_file='snout_view_factors_analytic.npz'):
         self.material = {**RSLE57, **(material or {})}
         self.panels = panels
         self.n_grid = n_grid
         self._build_geometry(sp_params, snout)
-        self._view_factors(n_rays, vf_file, seed)
-        
-        # Lumped thermal mass of 1 m2 of wall 
+        self._view_factors(vf_file)
+
+        # Lumped thermal mass of 1 m2 of wall
         m = self.material
         self.heat_capacity = m['density'] * m['specific_heat'] * m['thickness']   # J/m2/K
-        
+
         # Conduction from the hot inside face through the RSLE sheet to outside air
         self.r_out = m['thickness'] / m['conductivity']                           # m2K/W
-        
+
         self.wall_temp_k = None     # wall temperatures live between steps (transient)
-        
+
     def _build_geometry(self, sp_params, snout):
-        # Same aperture fram as snout_soltrace: sideways, up, normal toward the field
+        # Same aperture frame as snout_soltrace: sideways, up, normal toward the field
         n = self.n_grid
         azimuth = np.radians(sp_params['receiver.0.rec_azimuth'])
         aperture_center = np.array([0.0, 0.0, sp_params['solarfield.0.tht']])
@@ -54,21 +81,11 @@ class SnoutThermal:
         flare = depth * np.tan(np.radians(snout['horiz']) / 2)
         top_front = height / 2 - depth * np.tan(np.radians(snout['top']))
         bottom_front = -height / 2 - depth * np.tan(np.radians(snout['bot']))
-        
-        # The enclosure: the 4 walls plus the 2 openings. 
-        # An opening is not a material surface, but radiations leaves through it never comes back
-        # So it acts as a perfect absorber: a black surface
+
+        # The enclosure: the 4 walls plus the 2 openings.
+        # An opening is not a material surface, but radiation that leaves through it
+        # never comes back, so it acts as a perfect absorber: a black surface.
         # Opening 0 = the aperture (hot cavity), opening 1 = front opening (ambient)
-        
-        # The tunnel is convex, bounded by 6 planes. Store each as a point on the plane
-        # and a normal pointing INTO the tunnel; a ray from inside always exits through
-        # the plane with the smallest positive travel distance (used in _view_factors).
-        self.plane_points = [p['centroid'] for p in self.panels]
-        self.plane_normals = [p['rotation'][2] for p in self.panels]   # panel normals
-        self.plane_points += [aperture_center, aperture_center + depth * unit_normal]
-        self.plane_normals += [unit_normal, -unit_normal]
-        
-        # Both openings are rectangles: center, in-plane axes, size, inward normal
         front_height = top_front - bottom_front
         front_center = aperture_center + depth * unit_normal \
                 + 0.5 * (top_front + bottom_front) * unit_up
@@ -79,13 +96,13 @@ class SnoutThermal:
                 w=2 * (width / 2 + flare), h=front_height, normal=-unit_normal,
                 area=2 * (width / 2 + flare) * front_height),
         ]
-         
-        # Cut each wall into n x n cells, on the SAME grid panel_flux map uses, so cell
-        # [row, col] here receives flux[row, col] from the trace. The panels are trapezoids
-        # So cells cut by a slanted edge only keep theirs inside area (measured with a fine
-        # sub-grid, as in panel_flux_map)
 
+        # Cut each wall into n x n cells, on the SAME grid panel_flux_map uses, so cell
+        # [row, col] here receives flux[row, col] from the trace. The panels are
+        # trapezoids, so cells cut by a slanted edge are clipped to their inside part:
+        # the clipped polygon is the exact cell shape the view factors are computed on.
         self.cells = []             # one entry per cell: (panel index, row, col)
+        self.cell_polygons = []     # the clipped cell outline, 3D corners in order
         self.cell_area = []
         self.panel_edges = []
         for ip, panel in enumerate(self.panels):
@@ -93,29 +110,43 @@ class SnoutThermal:
             x_edges = np.linspace(local_xy[:, 0].min(), local_xy[:, 0].max(), n + 1)
             y_edges = np.linspace(local_xy[:, 1].min(), local_xy[:, 1].max(), n + 1)
             self.panel_edges.append((x_edges, y_edges))
-            cell_w, cell_h = x_edges[1] - x_edges[0], y_edges[1] - y_edges[0]
-            sub = 8
-            sx = x_edges[0] + (np.arange(n * sub) + 0.5) * cell_w / sub
-            sy = y_edges[0] + (np.arange(n * sub) + 0.5) * cell_h / sub
-            gx, gy = np.meshgrid(sx, sy)
-            inside = inside_quadrilateral(local_xy, np.c_[gx.ravel(), gy.ravel()])
-            fraction = inside.reshape(n, sub, n, sub).mean(axis=(1, 3))
             for row in range(n):
                 for col in range(n):
-                    if fraction[row, col] > 0:
-                        self.cells.append((ip, row, col))
-                        self.cell_area.append(fraction[row, col] * cell_w * cell_h)
-    
+                    rect = [(x_edges[col], y_edges[row]), (x_edges[col + 1], y_edges[row]),
+                            (x_edges[col + 1], y_edges[row + 1]), (x_edges[col], y_edges[row + 1])]
+                    clipped = clip_cell(rect, local_xy)
+                    if len(clipped) < 3:    # the cell lies entirely outside the trapezoid
+                        continue
+                    # Map the 2D clipped outline to 3D: centroid + x*sideways + y*up of the panel
+                    corners_3d = [panel['centroid'] + p[0] * panel['rotation'][0]
+                                  + p[1] * panel['rotation'][1] for p in clipped]
+                    self.cells.append((ip, row, col))
+                    self.cell_polygons.append(corners_3d)
+                    self.cell_area.append(polygon_area(corners_3d))
+        self.n_openings = 2
+        self.n_surfaces = self.n_openings + len(self.cells)
+        self.areas = np.array([o['area'] for o in self.openings] + self.cell_area)
+
 ## Thermal part starts here ##
 
-    def _view_factors(self, n_rays, vf_file, seed):
+    def _surface_polygon(self, i):
+        # The outline of surface i as 3D corners: a rectangle for an opening,
+        # the clipped cell polygon for a wall cell
+        if i < self.n_openings:
+            o = self.openings[i]
+            hw, hh = o['w'] / 2, o['h'] / 2
+            return [o['center'] + sx * hw * o['u'] + sy * hh * o['v']
+                    for sx, sy in [(-1, -1), (1, -1), (1, 1), (-1, 1)]]
+        return self.cell_polygons[i - self.n_openings]
+
+    def _view_factors(self, vf_file):
         # View factor F[i,j]: of all diffuse radiation leaving surface i, the fraction
         # that lands on surface j. Pure geometry, no temperatures (Jackson 7.3 p. 298).
-        # Janna computes hers from a textbook formula because her surfaces are parallel
-        # rectangles; our tilted trapezoids have no formula, so we MEASURE them:
-        # !!! fire random rays from each surface and count where they land (Monte Carlo).
+        # Computed ANALYTICALLY with the closed-form expression of Narayanaswamy (2015)
+        # for two arbitrarily oriented planar polygons (viewfactor.py, ported from the
+        # UW-Madison esolab viewFactor.m). Reciprocity A_i F_ij = A_j F_ji is exact by
+        # construction, and the row sums come out at 1 to ~1e-6 with no correction.
         # Geometry never changes, so this runs once and the result is saved to a file.
-        # That file is the lookup table.
         if vf_file and os.path.exists(vf_file):
             data = np.load(vf_file)
             if data['vf'].shape[0] == self.n_surfaces:
@@ -123,90 +154,28 @@ class SnoutThermal:
                 self._build_matrix()
                 return
 
-        rng = np.random.default_rng(seed)
-        counts = np.zeros((self.n_surfaces, self.n_surfaces))
+        # Which plane each surface lies in: coplanar surfaces cannot see each other
+        plane_of = [4, 5] + [self.cells[k][0] for k in range(len(self.cells))]
+        polygons = [self._surface_polygon(i) for i in range(self.n_surfaces)]
+        vf = np.zeros((self.n_surfaces, self.n_surfaces))
         for i in range(self.n_surfaces):
-            # Random starting points on surface i
-            origins, frame = self._sample_surface(i, n_rays, rng)
-
-            # Random directions, cosine-weighted: a diffuse surface sends more energy
-            # near its normal (the cos(theta) in the view factor integral, 7.3 p. 298)
-            u1, u2 = rng.random(n_rays), rng.random(n_rays)
-            cos_theta, phi = np.sqrt(u1), 2 * np.pi * u2
-            sin_theta = np.sqrt(1.0 - u1)
-            direction_local = np.c_[sin_theta * np.cos(phi),
-                                    sin_theta * np.sin(phi), cos_theta]
-            directions = direction_local @ frame    # rows of frame = local axes
-
-            # Where does each ray exit? Smallest positive distance among the 6 planes
-            t_exit = np.full(n_rays, np.inf)
-            plane_hit = np.zeros(n_rays, dtype=int)
-            for j, (point, normal) in enumerate(zip(self.plane_points, self.plane_normals)):
-                denominator = directions @ normal
-                t = np.where(denominator < -1e-12,
-                             ((point - origins) @ normal) / denominator, np.inf)
-                closer = (t > 1e-9) & (t < t_exit)
-                t_exit[closer] = t[closer]
-                plane_hit[closer] = j
-            hit_points = origins + t_exit[:, None] * directions
-
-            # Count the hits. Planes 4 and 5 are the openings (surfaces 0 and 1)
-            counts[i, 0] += (plane_hit == 4).sum()
-            counts[i, 1] += (plane_hit == 5).sum()
-            # A hit on a wall is assigned to its cell by binning in the panel frame
-            for ip in range(4):
-                on_panel = plane_hit == ip
-                if not on_panel.any():
-                    continue
-                panel = self.panels[ip]
-                local = (hit_points[on_panel] - panel['centroid']) @ panel['rotation'][:2].T
-                x_edges, y_edges = self.panel_edges[ip]
-                col = np.clip(np.digitize(local[:, 0], x_edges) - 1, 0, self.n_grid - 1)
-                row = np.clip(np.digitize(local[:, 1], y_edges) - 1, 0, self.n_grid - 1)
-                for cell_index, (p, r, c) in enumerate(self.cells):
-                    if p == ip:
-                        counts[i, self.n_openings + cell_index] += \
-                            ((row == r) & (col == c)).sum()
-        vf = counts / n_rays
-        
-        # Clean the Monte Carlo noise with the two exact rules the estimates must obey:
-        # reciprocity A_i F_ij = A_j F_ji (7.3 p. 299) and every row summing to 1
-        vf = 0.5 * (vf + (self.areas[None, :] / self.areas[:, None]) * vf.T)
-        vf /= vf.sum(axis=1, keepdims=True)
+            for j in range(i + 1, self.n_surfaces):
+                if plane_of[i] == plane_of[j]:
+                    continue        # same plane: F = 0, nothing to compute
+                # One call gives both directions, sharing the same edge-pair sum
+                vf[i, j], vf[j, i] = view_factor(polygons[i], polygons[j])
         self.vf = vf
         if vf_file:
             np.savez(vf_file, vf=vf, areas=self.areas)
         self._build_matrix()
-        
-    def _sample_surface(self, i, n_rays, rng):
-        # Random points on surface i, plus its frame (rows = local axes in global)
-        if i < self.n_openings:
-            opening = self.openings[i]
-            s = rng.uniform(-opening['w'] / 2, opening['w'] / 2, n_rays)
-            u = rng.uniform(-opening['h'] / 2, opening['h'] / 2, n_rays)
-            origins = opening['center'] + s[:, None] * opening['u'] + u[:, None] * opening['v']
-            return origins, np.array([opening['u'], opening['v'], opening['normal']])
-        ip, row, col = self.cells[i - self.n_openings]
-        panel = self.panels[ip]
-        x_edges, y_edges = self.panel_edges[ip]
-        kept = np.zeros((0, 2))
-        while len(kept) < n_rays:   # keep only points inside the trapezoid
-            x = rng.uniform(x_edges[col], x_edges[col + 1], n_rays)
-            y = rng.uniform(y_edges[row], y_edges[row + 1], n_rays)
-            points = np.c_[x, y]
-            kept = np.vstack([kept, points[inside_quadrilateral(panel['local_xy'], points)]])
-        kept = kept[:n_rays]
-        origins = panel['centroid'] + kept[:, [0]] * panel['rotation'][0] \
-            + kept[:, [1]] * panel['rotation'][1]
-        return origins, panel['rotation']
-    
+
     def _build_matrix(self):
         # Radiosity J_i: ALL energy leaving surface i per m2, emission plus reflection:
         #   J_i = E_i + rho_i * sum_j F_ij J_j        (Jackson 7.4 p. 311)
         # One such equation per surface -> a linear system (I - diag(rho) F) J = E
         # (7.4 p. 313). This is where the gray body enters: in the infrared the walls
         # reflect rho = 1 - eps of what arrives, and those reflections bounce between
-        # the walls. 
+        # the walls.
         # Openings are black: rho = 0, they reflect nothing.
         # Same construction as Janna's create_and_invert_coeff_matrix: K built from
         # rho and F, inverted ONCE, reused every step.
@@ -214,7 +183,7 @@ class SnoutThermal:
         self.rho = np.array([0.0] * self.n_openings + [1.0 - eps] * len(self.cells))
         K = np.eye(self.n_surfaces) - self.rho[:, None] * self.vf
         self.Kinv = np.linalg.inv(K)
-        
+
     def reset(self, ambient_c=20.0):
         # Walls start at ambient, the cold-start condition
         self.wall_temp_k = np.full(len(self.cells), ambient_c + 273.15)
@@ -228,7 +197,7 @@ class SnoutThermal:
         m = self.material
         eps = m['ir_emissivity']
         t_amb = ambient_c + 273.15
-        
+
         # Alpha*q_sol term. The sunlight band is NOT solved here: SolTrace
         # already traced it, including the 80% bouncing diffusely between the walls.
         # The maps are incident flux, so absorbed = 0.20 x incident.
