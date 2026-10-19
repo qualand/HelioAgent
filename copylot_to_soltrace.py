@@ -61,6 +61,8 @@ class Heliostat_Field:
         self.helio_n_cant_y = 8         # Number of canting facets in y (height) direction
         self.helio_x_gap = 0.0          # Gap between facets in x direction (m)
         self.helio_y_gap = 0.0          # Gap between facets in y direction (m)
+        self.helio_facet_data = None    # list of (25, 6) arrays, one per heliostat (measured canting)
+        self.helio_facet_aperture = None # (width, height) of one facet
 
         # Canting
         self.helio_cant_method = -1     # No canting=0; On-axis at slant=-1; On-axis, user-defined=1; NOT Supported: Off-axis, day and hour=3; User-defined vector=4
@@ -388,8 +390,12 @@ class Heliostat_Field:
 
             focal_length = st_field_info['helio_focal_length'][i]   # Assuming same focal length in both x and y directions
             ## TODO: canting methods?
-
-            helio = heliostat(position, aperture_size, number_panels, gaps, focal_length, aim_point, onaxis_canting_distance=focal_length)
+            if self.helio_facet_data is not None:
+                helio = heliostat(position, aperture_size, number_panels, gaps, 146.19, aim_point,
+                                  facet_data=self.helio_facet_data[i], facet_aperture=self.helio_facet_aperture)
+            else:
+                helio = heliostat(position, aperture_size, number_panels, gaps, focal_length, aim_point,
+                                  onaxis_canting_distance=focal_length)
             mirror_optic = opth[st_field_info['attenuation_id'][i]] if self.include_attenuation else opth
             helio.create_geometry(PT, mirror_optic)
             self.heliostats.append(helio)
@@ -413,13 +419,13 @@ class Heliostat_Field:
         set_back_optics_to_front(opt_rec)
         
         if self.snout is not None:
-            opt_snout = PT.add_optic('SNOUT Surface')
-            opt_snout.front.dist_type = 'f'
-            opt_snout.front.reflectivity = 0.8
-            opt_snout.front.slope_error = 0.00001
-            opt_snout.front.spec_error = 1000.
-            set_back_optics_to_front(opt_snout)
-            self.snout_stage, self.snout_panels = add_snout(PT, sp_params, self.snout, opt_snout)
+            self.opt_snout = PT.add_optic('SNOUT Surface')
+            self.opt_snout.front.dist_type = 'f'
+            self.opt_snout.front.reflectivity = 0.8
+            self.opt_snout.front.slope_error = 0.00001
+            self.opt_snout.front.spec_error = 1000.
+            set_back_optics_to_front(self.opt_snout)
+            self.snout_stage, self.snout_panels = add_snout(PT, sp_params, self.snout, self.opt_snout)
 
         #--- Add Receiver
         if sp_params['receiver.0.rec_type'] == 3:          # Falling particle: curtain behind the aperture, tower face around it

@@ -28,7 +28,9 @@ class heliostat:
                  focal_length: Union[float,tuple],
                  aim_point: Point,
                  onaxis_canting_distance: float = np.nan, 
-                 offaxis_canting_sun_position: tuple = (np.nan, np.nan)):
+                 offaxis_canting_sun_position: tuple = (np.nan, np.nan),
+                 facet_data: np.ndarray = None,
+                 facet_aperture: tuple = None):
         """
         :param position: [m] Position of the heliostat
         :param aperture_size: [m] Size of the heliostat aperture (width, height)
@@ -38,6 +40,8 @@ class heliostat:
         :param aim_point: [m] Aimpoint of heliostat on the receiver in global coordinates (x, y, z)
         :param onaxis_canting_distance (optional): [m] Distance from the heliostat to cant facets
         :param offaxis_canting_sun_position (optional): [deg] Solar position at canting (azimuth, zenith)
+        :param facet_data (optional): (n, 6) measured facets in the face-up frame: origin x, y, z and canting normal nx, ny, nz
+        :param facet_aperture (optional): [m] (width, height) of one facet, required with facet_data
         """
         self.position = position
 
@@ -73,7 +77,13 @@ class heliostat:
 
         self.onaxis_canting_distance = np.nan
         self.offaxis_canting_sun_position = (np.nan, np.nan)
+        self.facet_data = facet_data
+        self.facet_aperture = facet_aperture
         self.canting_method = 'no_canting'  # We could use an enum type
+        if facet_data is not None:
+            if facet_aperture is None:
+                raise ValueError("facet_aperture is required with facet_data")
+            self.canting_method = 'measured'
         if not np.isnan(onaxis_canting_distance):
             if not any(np.isnan(np.array(offaxis_canting_sun_position, dtype=float))):
                 raise ValueError("Only specify either on-axis canting distance or off-axis canting sun position not both")
@@ -104,7 +114,7 @@ class heliostat:
         self.facets = list()
 
         # For testing only, relative positions and aimpoints
-        num_el = number_panels[0] * number_panels[1]
+        num_el = len(facet_data) if facet_data is not None else number_panels[0] * number_panels[1]
         self.rel_positions = np.zeros((num_el, num_el))
         self.rel_aimpoints = np.zeros((num_el, num_el))
 
@@ -147,63 +157,79 @@ class heliostat:
         # Create mirror panels
         self.facets.clear()
         self.heliostat_area = 0.0
-        panel_y = - self.aperture_size[1] / 2 + panel_height / 2
-        for _ in range(self.number_panels[1]):          # height
-            panel_x = - self.aperture_size[0] / 2 + panel_width / 2
-            for _ in range(self.number_panels[0]):      # width
+        if self.canting_method == 'measured':
+            for facet_x, facet_y, facet_z, normal_x, normal_y, normal_z in self.facet_data:
                 element = stage.add_element()
-
-                if self.canting_method == 'no_canting':
-                    element.position = Point(panel_x, panel_y, 0.0)
-                    element.aim = Point(panel_x, panel_y, 100)  # point straight up
-                elif self.canting_method == 'on-axis':
-                    c = 1 / (2. * self.onaxis_canting_distance)
-                    z = 0.5 * c *(panel_x**2 + panel_y**2)
-                    element.position = Point(panel_x, panel_y, z)     # NOTE: Z-position shift the panels slightly to follow canting curvature
-                    # element.position = Point(panel_x, panel_y, 0.0)   # This option center points all fall on the same plane.
-                    element.aim = Point(0.0, 0.0, 2 * self.onaxis_canting_distance)
-                    # element.aim = Point(0.0, 0.0, self.onaxis_canting_distance)
-                elif self.canting_method == 'off-axis':
-                    element.position = Point(panel_x, panel_y, 0.0)   # This option panel center points all fall on the same plane.
-
-                    # Calculate the panel's position within the global coordinates
-                    p_pos = element.position
-                    p_pos = PT.util_rotation_arbitrary(-delta_azimuth, Point(0.0,0.0,1.0), Point(), p_pos)
-                    p_pos = PT.util_rotation_arbitrary(-delta_elevation, elevation_axis, Point(), p_pos)
-                    p_pos_global = p_pos + self.position
-                    
-                    # Determine the vector from the panel centroid to the aim point
-                    pref = (self.aim_point - p_pos_global).unitize()
-                    pnorm = (pref + sun_vec).unitize()      # Panel normal
-
-                    # Translate back to stow position
-                    pnorm = PT.util_rotation_arbitrary(delta_elevation, elevation_axis, Point(), pnorm)
-                    pnorm = PT.util_rotation_arbitrary(delta_azimuth, Point(0.0,0.0,1.0), Point(), pnorm)
-
-                    # Scale aim to target and translate to panel position
-                    scale = 2.0 * (self.aim_point - p_pos_global).radius()
-                    element.aim = pnorm * scale + element.position
-                else:
-                    raise ValueError("Unexpected canting method value")
-
+                element.position = Point(facet_x, facet_y, facet_z)
+                element.aim = Point(facet_x + normal_x, facet_y + normal_y, facet_z + normal_z)
                 element.zrot = 0.0
-                element.aperture_rectangle(panel_width, panel_height)
-                self.heliostat_area += panel_width * panel_height
-
+                element.aperture_rectangle(*self.facet_aperture)
+                self.heliostat_area += self.facet_aperture[0] * self.facet_aperture[1]
                 if self.focal_length[0] == 0.0:
                     element.surface_flat()
                 else:
                     element.surface_parabolic(self.focal_length[0], self.focal_length[1])
-                
                 element.optic = facet_optics
                 element.enabled = True
-
                 self.facets.append(element)
-                # Increment the x position
-                panel_x += panel_width + self.gaps[0]
+        else:
+            panel_y = - self.aperture_size[1] / 2 + panel_height / 2
+            for _ in range(self.number_panels[1]):          # height
+                panel_x = - self.aperture_size[0] / 2 + panel_width / 2
+                for _ in range(self.number_panels[0]):      # width
+                    element = stage.add_element()
+
+                    if self.canting_method == 'no_canting':
+                        element.position = Point(panel_x, panel_y, 0.0)
+                        element.aim = Point(panel_x, panel_y, 100)  # point straight up
+                    elif self.canting_method == 'on-axis':
+                        c = 1 / (2. * self.onaxis_canting_distance)
+                        z = 0.5 * c *(panel_x**2 + panel_y**2)
+                        element.position = Point(panel_x, panel_y, z)     # NOTE: Z-position shift the panels slightly to follow canting curvature
+                        # element.position = Point(panel_x, panel_y, 0.0)   # This option center points all fall on the same plane.
+                        element.aim = Point(0.0, 0.0, 2 * self.onaxis_canting_distance)
+                        # element.aim = Point(0.0, 0.0, self.onaxis_canting_distance)
+                    elif self.canting_method == 'off-axis':
+                        element.position = Point(panel_x, panel_y, 0.0)   # This option panel center points all fall on the same plane.
+
+                        # Calculate the panel's position within the global coordinates
+                        p_pos = element.position
+                        p_pos = PT.util_rotation_arbitrary(-delta_azimuth, Point(0.0,0.0,1.0), Point(), p_pos)
+                        p_pos = PT.util_rotation_arbitrary(-delta_elevation, elevation_axis, Point(), p_pos)
+                        p_pos_global = p_pos + self.position
+                    
+                        # Determine the vector from the panel centroid to the aim point
+                        pref = (self.aim_point - p_pos_global).unitize()
+                        pnorm = (pref + sun_vec).unitize()      # Panel normal
+
+                        # Translate back to stow position
+                        pnorm = PT.util_rotation_arbitrary(delta_elevation, elevation_axis, Point(), pnorm)
+                        pnorm = PT.util_rotation_arbitrary(delta_azimuth, Point(0.0,0.0,1.0), Point(), pnorm)
+
+                        # Scale aim to target and translate to panel position
+                        scale = 2.0 * (self.aim_point - p_pos_global).radius()
+                        element.aim = pnorm * scale + element.position
+                    else:
+                        raise ValueError("Unexpected canting method value")
+
+                    element.zrot = 0.0
+                    element.aperture_rectangle(panel_width, panel_height)
+                    self.heliostat_area += panel_width * panel_height
+
+                    if self.focal_length[0] == 0.0:
+                        element.surface_flat()
+                    else:
+                        element.surface_parabolic(self.focal_length[0], self.focal_length[1])
                 
-            # Increment the y position
-            panel_y += panel_height + self.gaps[1]
+                    element.optic = facet_optics
+                    element.enabled = True
+
+                    self.facets.append(element)
+                    # Increment the x position
+                    panel_x += panel_width + self.gaps[0]
+                
+                # Increment the y position
+                panel_y += panel_height + self.gaps[1]
 
         # NOTE: for TESTING only, calculate relative positions and aimpoints
         for i, ref_el in enumerate(self.get_elements()):

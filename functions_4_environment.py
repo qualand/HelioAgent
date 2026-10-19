@@ -21,26 +21,31 @@ from receiver_thermal import ReceiverThermal
     
 def build_field():
     field = Heliostat_Field()
-    field.tower_height = 35.0
+    field.tower_height = 45.48          # G3P3 aperture center (NSTTF example)
     field.rec_type = 3
     field.rec_height = 1.32
     field.rec_width = 1.32
     field.rec_elevation = 0.0
-    field.rec_azimuth = 21.2
+    field.rec_azimuth = 19.414          # aperture aims at (0, 122) from the tower at (-40, 8.5)
     field.cavity = dict(height_ratio=1.1, width_ratio=1.1, curtain_depth=0.5, tower_face=10.0)
     field.snout = dict(depth=0.70, horiz=96.0, top=0.0, bot=34.0)
-    field.helio_height = 6.1
-    field.helio_width = 6.1
+    field.helio_height = 6.3502
+    field.helio_width = 6.8074          # real NSTTF heliostat: 25 facets of 1.2192 m with gaps
     field.helio_n_cant_x = 5
     field.helio_n_cant_y = 5
     field.helio_focus_method = 1
     field.n_focus_bands = 3
     field.helio_reflectivity = 0.885
     field.helio_soiling = 1.0
-    field.helio_surf_err = 0.0050
-    field.helio_reflect_err = 0.00012
-    layout = pd.read_csv('NSTTF_Heliostats_origin_at_torque_tube.csv')
-    field.set_layout(layout['X'].values + 40.0, layout['Y'].values - 8.0, layout['Z'].values)
+    field.helio_surf_err = 0.0012       # 1.2 mrad slope error
+    field.helio_reflect_err = 0.00005   # 0.05 mrad specularity
+    coords = pd.read_csv('nsttf_data/coordinates.csv', header=None, names=['X', 'Y', 'Z'], encoding='utf-8-sig')
+    names = pd.read_csv('nsttf_data/ids.csv', header=None)[0].str.lstrip('*')
+    field.set_layout(coords['X'].values + 40.0, coords['Y'].values - 8.5, coords['Z'].values)
+    field.helio_facet_aperture = (1.2192, 1.2192)
+    tables = [np.genfromtxt('nsttf_data/canting/' + name + '_Off_Axis_Canting_Details_TowerTop_Target.csv',
+                            delimiter=',', skip_header=1) for name in names]
+    field.helio_facet_data = [np.c_[t[:, 1], t[:, 2], t[:, 3] + 0.1778, t[:, 6:9]] for t in tables]   
     PT = field.set_up_soltrace()
     field.thermal = ReceiverThermal()
     return field, PT
@@ -107,7 +112,7 @@ def set_aims_discrete(field, choice, grid, axes):
 def trace(PT, field, sun_az, sun_el, nray = 1e5, dni = 950):
     for h in field.heliostats:
         h.update_geometry(PT, sun_az, sun_el)
-    #PT.write_soltrace_input_file('g3p3_snout.stinput')
+    PT.write_soltrace_input_file('g3p3_snout.stinput')
     simulate_soltrace(PT, dni=dni, nray=nray, seed=123, nthreads=1)
     res = process_soltrace_results(PT, field.field_area)
     
