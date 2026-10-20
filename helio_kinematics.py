@@ -32,14 +32,18 @@ class HelioKinematics:
     def snap(self, az, el):
         self.az = np.array(az, dtype=float)
         self.el = np.array(el, dtype=float)
+        self.travel = 0.0
 
     # Each motor moves at most rate*dt_s radians this step
     def move_toward(self, az_t, el_t, dt_s):
         lim = self.rate * dt_s
         d_az = (az_t - self.az + np.pi) % (2 * np.pi) - np.pi                   # shortest way round
         d_el = el_t - self.el
-        self.az = self.az + np.clip(d_az, -lim, lim)
-        self.el = self.el + np.clip(d_el, -lim, lim)
+        step_az = np.clip(d_az, -lim, lim)
+        step_el = np.clip(d_el, -lim, lim)
+        self.az = self.az + step_az
+        self.el = self.el + step_el
+        self.travel = float(np.sum(np.abs(step_az) + np.abs(step_el)))      # radians moved by all motors this step
         return np.maximum(np.abs(d_az), np.abs(d_el)) <= lim                    # True = arrived
 
     # Reflect the sun about the current normal, walk dist m along it.

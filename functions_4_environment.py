@@ -1,7 +1,7 @@
 # This is the physics 
 
 #   build_field    -> "Build field, once"
-#   receiver_axes  ->  helper for the Action box (which way is "up" on the plate)
+#   receiver_axes  ->  helper for the Action box (which way is "up" on the aperture)
 #   set_aims       -> "Action space"
 #   trace          -> "Ray trace"
 
@@ -9,15 +9,15 @@ import numpy as np
 import pandas as pd
 from copylot_to_soltrace import Heliostat_Field, simulate_soltrace, process_soltrace_results
 from api.pysoltrace import Point
-from snout_soltrace import snout_results
+from snout_soltrace import snout_results, panel_flux_map
+from snout_thermal import SnoutThermal
 from receiver_soltrace import curtain_flux 
 from receiver_thermal import ReceiverThermal
 
 
-# Build the plant once. Same defaults as main.py
-# SolarPILOT decides where the heliostats stand
+# Build the plant once. G3P3 at the NSTTF: real heliostat layout and measured facet canting
 # SolTrace gets a 3D scene built from that layout
-# Returns the field object (list of heliostats) and PT (the SolTrace scene)\
+# Returns the field object (list of heliostats) and PT (the SolTrace scene)
     
 def build_field():
     field = Heliostat_Field()
@@ -48,12 +48,13 @@ def build_field():
     field.helio_facet_data = [np.c_[t[:, 1], t[:, 2], t[:, 3] + 0.1778, t[:, 6:9]] for t in tables]   
     PT = field.set_up_soltrace()
     field.thermal = ReceiverThermal()
+    field.snout_thermal = SnoutThermal(field.results['sp_parameters'], field.snout, field.snout_panels)
     return field, PT
 
-# The plate is tilted, so "1 m on the plate" is not "1 m up in z"
+# The aperture is turned toward the field, so "1 m sideways on the aperture" is not "1 m along x"
 # This returns 3 vectors in global (x east, y north, z up) coordinates
 # An aim offset (dx, dv) in meters becomes center + dx*u_h + dv*u_v
-# Both vectors are perpendicular to the plate normal, so the aim point always stays in the plane of the plate. 
+# Both vectors are perpendicular to the aperture normal, so the aim point always stays in the aperture plane
 
 def receiver_axes(field):
     p = field.results['sp_parameters']
@@ -71,16 +72,16 @@ def set_aims(field, offsets, axes):
     for h, (dx, dv) in zip(field.heliostats, offsets):
         h.aim_point = Point(*(center + dx * u_h + dv * u_v))
         
-# dv and dx on the plate , tranform to global xyz aim poin
+# dx and dv on the aperture, transformed to a global xyz aim point
 
 def offsets_to_xyz(offsets, axes): # aim point destination
     center, u_h, u_v = axes
     o = np.asarray(offsets, dtype=float)
     return center + o[:, [0]] * u_h + o[:, [1]] * u_v # center + dx sideways + dv up
 
-# Write one xyz aim point into each heliostat; update geometry() reads it on the next trace ()
+# Write one xyz aim point into each heliostat; update_geometry() reads it on the next trace()
 
-def set_aim_xyz(field, xyz): # aimpoint current positon
+def set_aim_xyz(field, xyz): # aim point current position
     for h, p in zip(field.heliostats, xyz):
         h.aim_point = Point(*p)
         
@@ -88,11 +89,20 @@ def set_aim_xyz(field, xyz): # aimpoint current positon
 
 def aim_grid(field, n_cols = 3, n_rows = 4, margin = 0.15):
     p = field.results['sp_parameters']
-    W, H = p['receiver.0.rec_width'], p['receiver.0.rec_height']    # 4 m, 4 m
+    W, H = p['receiver.0.rec_width'], p['receiver.0.rec_height']    # 1.32 m, 1.32 m aperture
     xs = np.linspace(-W / 2 + margin, W / 2 - margin, n_cols)       # left to right
     vs = np.linspace(-H / 2 + margin, H / 2 - margin, n_rows)       # bottom to top
     grid = np.array([(x, v) for v in vs for x in xs])               # k = row * n_cols + col
     return grid
+
+# Image-size rule: near mirrors (small images) take the outer points, far mirrors (big images) the center
+OUTER_TO_CENTER = [0, 2, 9, 11, 1, 10, 3, 5, 6, 8, 4, 7]     # corners, edges, center of the 3 x 4 menu
+
+def spread_by_distance(positions, n_points=12):
+    distance = np.linalg.norm(positions[:, :2], axis=1)
+    rank = np.argsort(np.argsort(distance))                      # 0 = nearest to the tower
+    group = rank * n_points // len(distance)                     # equal-size groups, near to far
+    return np.array(OUTER_TO_CENTER)[group]
 
 # Looks up each mirror's (dx, dv) in the menu, then hands the result to the continuous set_aims, which does the conversion to aim_point as before.
 # Returns the offsets array so the environment can keep it as state.
@@ -102,31 +112,46 @@ def set_aims_discrete(field, choice, grid, axes):
     set_aims(field, offsets, axes)
     return offsets
 
-# The Ray trace box. One sun position in, flux out. No decisions here. 
+# The Ray trace box. One sun position in, flux and temperatures out. No decisions here.
 # 1. Point every mirror at its aim_point for this sun
 # 2. Run SolTrace, single thread
-# 3. Count rays into power and efficiencies
-# 4. Bin the hits on the 4 m plate into a 25x25 flux map in kW/m2
-# Elements[0] is the plate, elements [-1] is the 50 m back surface behind it
+# 3. Count rays into power and efficiencies; absorbed power and peak flux on each SNOUT panel
+# 4. Bin the hits on the curtain into a 25x25 flux map in kW/m2 and hand it to the receiver thermal model
+# 5. March the SNOUT wall temperatures one step
 
-def trace(PT, field, sun_az, sun_el, nray = 1e5, dni = 950):
+def trace(PT, field, sun_az, sun_el, nray=1e5, dni=950, dt_s=60.0):
     for h in field.heliostats:
         h.update_geometry(PT, sun_az, sun_el)
     PT.write_soltrace_input_file('g3p3_snout.stinput')
     simulate_soltrace(PT, dni=dni, nray=nray, seed=123, nthreads=1)
     res = process_soltrace_results(PT, field.field_area)
-    
+
     if field.snout is not None:
         res.update(snout_results(PT, field.snout_panels))
-        
+
     flux = curtain_flux(PT, field.curtain, n_height=25, n_width=25)
     res.update(field.thermal.step(flux))
+
+    if field.snout is not None:
+        flux_maps = [panel_flux_map(PT, panel, nbins=field.snout_thermal.n_grid) for panel in field.snout_panels]
+        res.update(field.snout_thermal.step(flux_maps, t_aperture_c=res['particle_out_c'], dt_s=dt_s))   # cavity seen through the aperture taken at the particle outlet temperature
     return res, flux
 
+# March the SNOUT walls to steady state under the flux of the last trace (normal operation starts hot)
+def warm_up_snout(field, PT, t_aperture_c, dt_s=60.0, max_minutes=240, tol_c=0.5):
+    flux_maps = [panel_flux_map(PT, panel, nbins=field.snout_thermal.n_grid) for panel in field.snout_panels]
+    field.snout_thermal.reset()
+    previous_c = -1.0
+    for _ in range(max_minutes):
+        result = field.snout_thermal.step(flux_maps, t_aperture_c=t_aperture_c, dt_s=dt_s)
+        if abs(result['SNOUT wall T max (C)'] - previous_c) < tol_c:
+            break
+        previous_c = result['SNOUT wall T max (C)']
+    return result
 ############################################################################################################################
 # Step 2
 
-# An episode has to move through time, so the sun must come from a day and and hour instead
+# An episode has to move through time, so the sun must come from a day and an hour instead
 # The environment will keep a variable "hour" and add dt/60 to it every step
 
 from util import sun_position
@@ -140,7 +165,7 @@ def sun_at(day, hour):
 if __name__ == "__main__":    
     field, PT = build_field()
     axes = receiver_axes(field)
-    grid = aim_grid(field, n_cols=3, n_rows=4, margin=1)
+    grid = aim_grid(field, n_cols=3, n_rows=4, margin=0.15)
     n = len(field.heliostats)
     
     print("aim menu, k: (dx,dv) in meters")
@@ -149,7 +174,7 @@ if __name__ == "__main__":
         
     az, el = sun_at(172, 9.0)
     
-    # A: every mirror on point 4, the reastest the center
+    # A: every mirror on point 4, the nearest to the center
     set_aims_discrete(field, np.full(n,4), grid, axes)
     res_A, flux_A = trace(PT, field, az, el)
     
@@ -159,4 +184,4 @@ if __name__ == "__main__":
     
     for key in ['Absorbed power (kW)', 'Intercept efficiency (%)']:
         print(f"{key:28s}  A: {res_A[key]:10.2f}   B: {res_B[key]:10.2f}")
-    print(f"{'peak flux on plate (kW/m2)':28s}  A: {flux_A.max():10.2f}   B: {flux_B.max():10.2f}")
+    print(f"{'peak flux on curtain (kW/m2)':28s}  A: {flux_A.max():10.2f}   B: {flux_B.max():10.2f}")
