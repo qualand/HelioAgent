@@ -1,15 +1,66 @@
-Informations that are missing or modeling that needs to be refined:
+# Missing information and modeling to refine
 
-# Confirm real SNOUT geometry with SANDIA
+## Questions
 
-# Confirm the SNOUT wall build-up (material RSLE-57??) with SANDIA
+### 1. Heliostats used for the G3P3 tower
 
-# Confirm max allowable temperature on the receiver and SNOUT with SANDIA
+**Question:** Which heliostats serve G3P3 (219 or 218)? ID, position, canting.
 
-# Confirm desired flux profile over the curtain (target shape and peak limit) with SANDIA
+**Current model:**
+- 218 heliostats, NSTTF rows 5 to 14
+- Tower base at x = -40 m, y = 8.5 m (NSTTF coordinates)
+- 5 x 5 facets of 1.2192 m; 37.2 m² per heliostat; 8101 m² total
+- Measured canting per heliostat; facet focal length 146.19 m
+- Reflectivity 0.885, slope error 1.2 mrad, specularity 0.05 mrad
+- All heliostats in service
 
-# Confirm receiver start-up procedure with SANDIA
+### 2. SNOUT geometry
 
-# Receiver thermal model does not discretize the side walls
+**Current model:**
+- Depth 0.70 m
+- Side panels 48° each; top panel 0°; bottom panel 34° down
+- Aperture 1.32 m x 1.32 m, center at 45.48 m, azimuth 19.414°
+- Our sources disagree: aperture 1.30 or 1.325 m; angles ~75°, 4°, 32°
 
-# One-way coupling: SNOUT infrared into the cavity is not fed back to the receiver model
+### 3. SNOUT wall build-up (RSLE-57?)
+
+**Current model:**
+- One RSLE-57 sheet, 25 mm (assumed), no backing layer
+- Density 2100 kg/m³, conductivity 0.7 W/m K, cp 1000 J/kg K (assumed)
+- Solar absorptivity 0.2 (Mills et al. 2024); infrared emissivity 0.8 (assumed)
+- No wind; ambient 20 °C
+
+### 4. Maximum allowable temperatures on the receiver and SNOUT
+
+**Current model:**
+- SNOUT: 1200 °C (RSLE-57 use limit)
+- Receiver: no limit set
+- Particles: 555 °C in, 775 °C out
+
+### 5. Desired flux profile over the curtain (shape and peak limit)
+
+**Current model:**
+- No target shape, no peak flux limit
+- Aiming goal: even curtain temperature, high optical efficiency
+
+### 6. Receiver start-up procedure
+
+**Current model:**
+- Normal operating hours only; plant starts already running
+- SNOUT walls start at ambient and heat up over time
+
+## Model items we are refining (no input needed)
+
+### 7. Receiver thermal model: side walls are not discretized
+
+**Current model:**
+- Cavity side walls, ceiling and floor: one surface, one temperature
+- Curtain: one flat plane, 0.5 m behind the aperture
+- Sunlight absorbed by cavity walls in the ray trace not yet included
+
+### 8. One-way coupling between the SNOUT and the receiver
+
+**Current model:**
+- Receiver model sees the sky through the aperture (T_amb - 20 °C)
+- SNOUT model sees an effective cavity temperature through the aperture
+- SNOUT infrared into the cavity not yet fed back to the receiver model
