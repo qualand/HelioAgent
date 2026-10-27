@@ -12,12 +12,22 @@ def receiver_frame(sp_params):
     unit_normal = np.array([np.sin(azimuth), np.cos(azimuth), 0.0])
     return aperture_center, unit_sideways, unit_up, unit_normal
 
-# Flat rectangle with its local x sideways and local y vertical, so PT.bin_rays() works on it
-def add_rectangle(PT, stage, center, width, height, unit_normal, optic, comment):
+# SolTrace z-rotation (deg) that turns the element's local x axis onto width_direction.
+# util_calc_zrot_azel cannot do this for a horizontal element (normal straight up or down):
+# it returned 0 there, which left the cavity top and bottom walls on the global x-y axes, 19.4 deg off.
+def zrot_toward(unit_normal, width_direction):
+    alpha = np.arctan2(unit_normal[0], unit_normal[2])
+    beta = np.arcsin(unit_normal[1])
+    local_x = np.array([np.cos(alpha), 0.0, -np.sin(alpha)])                                       # local x at zrot = 0
+    local_y = np.array([-np.sin(alpha) * np.sin(beta), np.cos(beta), -np.cos(alpha) * np.sin(beta)])   # local y at zrot = 0
+    return np.degrees(np.arctan2(-width_direction @ local_y, width_direction @ local_x))
+
+# Flat rectangle: width along width_direction (local x), height across it (local y)
+def add_rectangle(PT, stage, center, width, height, unit_normal, width_direction, optic, comment):
     element = stage.add_element()
     element.position = Point(*center.tolist())
     element.aim = Point(*(center + unit_normal).tolist())
-    element.zrot = PT.util_calc_zrot_azel(unit_normal.tolist())
+    element.zrot = zrot_toward(unit_normal, width_direction)
     element.aperture_rectangle(width, height)
     element.surface_flat()
     element.optic = optic
@@ -43,7 +53,7 @@ def add_particle_receiver(PT, sp_params, cavity, optic, wall_optic=None):
     
     # Element 0: particle curtain. Bottom of the curtain level with the bottom of the aperture
     curtain_center = point(0.0, -half_height + curtain_height / 2, -cavity['curtain_depth'])
-    curtain_element = add_rectangle(PT, stage, curtain_center, curtain_width, curtain_height, unit_normal, optic, 'Particle curtain')
+    curtain_element = add_rectangle(PT, stage, curtain_center, curtain_width, curtain_height, unit_normal, unit_sideways, optic, 'Particle curtain')
 
     # Cavity walls between the aperture plane and the curtain plane (Bill's scene, 0.8 diffuse):
     # spillage inside the cavity bounces and can still reach the curtain. The cavity cross-section
@@ -52,13 +62,13 @@ def add_particle_receiver(PT, sp_params, cavity, optic, wall_optic=None):
     cavity_top = -half_height + curtain_height          # aperture bottom = cavity bottom
     mid_up = -half_height + curtain_height / 2
     walls = {
-        'bottom': (point(0.0, -half_height, -depth / 2), unit_up, curtain_width, depth),
-        'top': (point(0.0, cavity_top, -depth / 2), -unit_up, curtain_width, depth),
-        'east': (point(curtain_width / 2, mid_up, -depth / 2), -unit_sideways, depth, curtain_height),
-        'west': (point(-curtain_width / 2, mid_up, -depth / 2), unit_sideways, depth, curtain_height),
+        'bottom': (point(0.0, -half_height, -depth / 2), unit_up, unit_sideways, curtain_width, depth),
+        'top': (point(0.0, cavity_top, -depth / 2), -unit_up, unit_sideways, curtain_width, depth),
+        'east': (point(curtain_width / 2, mid_up, -depth / 2), -unit_sideways, unit_normal, depth, curtain_height),
+        'west': (point(-curtain_width / 2, mid_up, -depth / 2), unit_sideways, unit_normal, depth, curtain_height),
     }
-    for name, (center, normal, width, height) in walls.items():
-        add_rectangle(PT, stage, center, width, height, normal, wall_optic, 'Cavity ' + name)
+    for name, (center, normal, width_direction, width, height) in walls.items():
+        add_rectangle(PT, stage, center, width, height, normal, width_direction, wall_optic, 'Cavity ' + name)
 
     # Front wall: inside of the aperture plane around the opening, facing the curtain
     front_strips = {
@@ -67,7 +77,7 @@ def add_particle_receiver(PT, sp_params, cavity, optic, wall_optic=None):
         'front west': (-(half_width + curtain_width / 2) / 2, 0.0, curtain_width / 2 - half_width, aperture_height),
     }
     for name, (sideways, up, width, height) in front_strips.items():
-        add_rectangle(PT, stage, point(sideways, up, 0.0), width, height, -unit_normal, wall_optic, 'Cavity ' + name)
+        add_rectangle(PT, stage, point(sideways, up, 0.0), width, height, -unit_normal, unit_sideways, wall_optic, 'Cavity ' + name)
     
     # Tower face: four black strips in the aperture plane, leaving the aperture open
     strips = {
@@ -79,7 +89,7 @@ def add_particle_receiver(PT, sp_params, cavity, optic, wall_optic=None):
     }
     
     for name, (sideways, up, width, height) in strips.items():
-        add_rectangle(PT, stage, point(sideways, up, 0.0), width, height, unit_normal, optic, 'Tower face ' + name)
+        add_rectangle(PT, stage, point(sideways, up, 0.0), width, height, unit_normal, unit_sideways, optic, 'Tower face ' + name)
         
     curtain = dict(element=curtain_element, center=curtain_center, unit_sideways=unit_sideways, unit_up=unit_up,
                    width=curtain_width, height=curtain_height)

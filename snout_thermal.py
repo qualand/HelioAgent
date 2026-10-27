@@ -120,9 +120,12 @@ class SnoutThermal:
                     # Map the 2D clipped outline to 3D: centroid + x*sideways + y*up of the panel
                     corners_3d = [panel['centroid'] + p[0] * panel['rotation'][0]
                                   + p[1] * panel['rotation'][1] for p in clipped]
+                    cell_area = polygon_area(corners_3d)
+                    if cell_area < 1e-3 * (x_edges[1] - x_edges[0]) * (y_edges[1] - y_edges[0]):
+                        continue    # only a corner touches the trapezoid: zero-area sliver, not a cell
                     self.cells.append((ip, row, col))
                     self.cell_polygons.append(corners_3d)
-                    self.cell_area.append(polygon_area(corners_3d))
+                    self.cell_area.append(cell_area)
         self.n_openings = 2
         self.n_surfaces = self.n_openings + len(self.cells)
         self.areas = np.array([o['area'] for o in self.openings] + self.cell_area)

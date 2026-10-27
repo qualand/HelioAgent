@@ -23,8 +23,8 @@ G3P3_RECEIVER = dict(
     Tpin=555.0 + 273.15,
     Tpout_target=775.0 + 273.15,
     is_adjust_mflow=True,               # find the particle flow that gives Tpout_target, as the plant controller does
-    flux_method=2,                      # flux map given as a 2D array
-    is_flux_absolute=True,
+
+    is_flux_absolute=True,    flux_method=2,                      # flux map given as a 2D array
     model_type=3,
     radiation_formulation=1,
     ny=21, nx=5, nyrad=20, nxrad=5,     # coarser than Janna's defaults (41, 10, 40, 10) for speed
@@ -42,7 +42,8 @@ class ReceiverThermal:
         incident_kw = float(flux.mean() * receiver.get_curtain_height() * receiver.get_curtain_width())
         if incident_kw < self.min_power_kw:
             return dict(converged=False, incident_kw=incident_kw, particle_kw=0.0, thermal_kw=0.0, efficiency=0.0,
-                        mass_flow=0.0, particle_out_c=receiver.Tpin - 273.15, particle_max_c=receiver.Tpin - 273.15, wall_max_c=ambient_c)
+                        mass_flow=0.0, particle_out_c=receiver.Tpin - 273.15, particle_max_c=receiver.Tpin - 273.15, wall_max_c=ambient_c,
+                        aperture_ir_kw=0.0)
         receiver.flux_profile_input = flux
         receiver.Tamb = ambient_c + 273.15
         receiver.Tsky = receiver.Tamb - 20.0
@@ -58,4 +59,5 @@ class ReceiverThermal:
                     mass_flow=float(results['mflow']),
                     particle_out_c=float(results['Tpout'] - 273.15),
                     particle_max_c=float(results['Tpmax'] - 273.15),
-                    wall_max_c=float(results['Twmax'] - 273.15))
+                    wall_max_c=float(results['Twmax'] - 273.15),
+                    aperture_ir_kw=float(results['QIR'] * 1e3))     # net infrared out through the aperture (QIR is in MW)

@@ -9,13 +9,13 @@
 # Startup from stow (stow=True) is kept for later.
 
 import numpy as np
-from functions_4_environment import build_field, receiver_axes, aim_grid, offsets_to_xyz, set_aim_xyz, trace, warm_up_snout, sun_at, spread_by_distance
+from functions_4_environment import build_field, receiver_axes, aim_grid, offsets_to_xyz, set_aim_xyz, trace, warm_up_snout, sun_at, spread_by_distance, DNI_MODELS
 from helio_kinematics import HelioKinematics
 from reward import score
 
 class AimingEnv:
 
-    def __init__(self, dt_min=1.0, slew_mrad_s=1.3, nray=1e5, episode_minutes=120, sun_min_el=7.0,
+    def __init__(self, dt_min=1.0, slew_mrad_s=1.3, nray=1e5, episode_minutes=120, sun_min_el=7.0, dni_model='clearsky',
                  wall_limit_c=1200.0, low_temp_c=765.0, w_uneven=1.0, w_travel=0.05, w_setpoint=0.5):
         # Build field, once. This is the slow part and it never repeats.
         self.field, self.PT = build_field()
@@ -30,12 +30,14 @@ class AimingEnv:
         self.wall_limit_c = wall_limit_c        # RSLE-57 limit, receiver walls and SNOUT: stop above it
         self.low_temp_c = low_temp_c            # hot storage needs 765 C (G3P3): stop below it
         self.sun_min_el = sun_min_el            # degrees; episode ends when the sun drops below it
+        self.dni_at = DNI_MODELS[dni_model]     # 'constant', 'clearsky' or 'tmy': function (day, hour, sun_el) -> W/m2
         self.weights = dict(w_uneven=w_uneven, w_travel=w_travel, w_setpoint=w_setpoint)
 
         # State: what the environment remembers between steps. Filled by reset(), changed by step()
         self.day = None        # day of year, fixed for the episode
         self.hour = None       # solar time; step() adds dt/60
         self.minute = None     # minutes since reset
+        self.dni = None        # W/m2 of the current minute
         self.choice = None     # one integer per heliostat, 12 options
         self.offsets = None    # (n, 2) floats: the (dx, dv) on the aperture for those menu points
         self.last = None       # metrics from the last ray trace
@@ -89,11 +91,12 @@ class AimingEnv:
         metrics.update(terms, reward=reward, why=why)
         return self._obs(), reward, done, metrics
 
-    # Where the mirrors are now -> beam landing points -> ray trace + thermal
+    # Where the mirrors are now -> beam landing points -> DNI of the minute -> ray trace + thermal
     def _trace_now(self, az, el, target):
         dist = np.linalg.norm(target - self.kin.pos, axis=1)      # mirror to wanted point, m
         set_aim_xyz(self.field, self.kin.aim_points(az, el, dist))
-        return trace(self.PT, self.field, az, el, nray=self.nray, dt_s=self.dt * 60)
+        self.dni = max(self.dni_at(self.day, self.hour, el), 1.0)   # 1 W/m2 floor keeps the efficiency ratio finite under clouds
+        return trace(self.PT, self.field, az, el, nray=self.nray, dni=self.dni, dt_s=self.dt * 60)
 
     def _metrics(self, res, flux, sun_el):
         return dict(
@@ -102,6 +105,7 @@ class AimingEnv:
             intercept=res['Intercept efficiency (%)'] / 100.0,
             optical_efficiency=res['Field efficiency (%)'] / 100.0,       # curtain power ÷ (DNI × mirror area)
             sun_el=sun_el,
+            dni_w_m2=self.dni,
             particle_out_c=res['particle_out_c'],
             particle_max_c=res['particle_max_c'],
             mass_flow=res['mass_flow'],                                    # kg/s the controller chose to hold 775 C
@@ -119,7 +123,7 @@ class AimingEnv:
         az, el = sun_at(self.day, self.hour)
         m = self.last
         return np.concatenate([
-            [self.hour, az, el],                      # clock and sun
+            [self.hour, az, el, self.dni],            # clock, sun, DNI
             self.offsets.ravel(),                     # where everyone is aiming
             [m['power_kw'], m['peak_kw_m2'], m['intercept'], m['particle_out_c'], m['wall_max_c'], m['snout_wall_max_c']],
         ]).astype(np.float32)
@@ -141,7 +145,7 @@ if __name__ == "__main__":
     env.reset(seed=0)
     for k in range(30):
         obs, reward, done, m = env.step(np.full(env.n, 4))
-        print(f"min {k+1:2d}  power {m['power_kw']:7.1f} kW  flow {m['mass_flow']:5.2f} kg/s  Tout {m['particle_out_c']:6.1f} C  "
+        print(f"min {k+1:2d}  DNI {m['dni_w_m2']:5.0f}  power {m['power_kw']:7.1f} kW  flow {m['mass_flow']:5.2f} kg/s  Tout {m['particle_out_c']:6.1f} C  "
               f"wall {m['wall_max_c']:6.1f} C  snout {m['snout_wall_max_c']:6.1f} C  reward {reward:6.3f}")
         if done:
             print('episode ended:', m['why'])

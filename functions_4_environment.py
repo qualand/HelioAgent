@@ -1,4 +1,4 @@
-# This is the physics 
+# This is the physics
 
 #   build_field    -> "Build field, once"
 #   receiver_axes  ->  helper for the Action box (which way is "up" on the aperture)
@@ -11,14 +11,14 @@ from copylot_to_soltrace import Heliostat_Field, simulate_soltrace, process_solt
 from api.pysoltrace import Point
 from snout_soltrace import snout_results, panel_flux_map
 from snout_thermal import SnoutThermal
-from receiver_soltrace import curtain_flux 
+from receiver_soltrace import curtain_flux
 from receiver_thermal import ReceiverThermal
 
 
 # Build the plant once. G3P3 at the NSTTF: real heliostat layout and measured facet canting
 # SolTrace gets a 3D scene built from that layout
 # Returns the field object (list of heliostats) and PT (the SolTrace scene)
-    
+
 def build_field():
     field = Heliostat_Field()
     field.tower_height = 45.48          # G3P3 aperture center (NSTTF example)
@@ -45,7 +45,7 @@ def build_field():
     field.helio_facet_aperture = (1.2192, 1.2192)
     tables = [np.genfromtxt('nsttf_data/canting/' + name + '_Off_Axis_Canting_Details_TowerTop_Target.csv',
                             delimiter=',', skip_header=1) for name in names]
-    field.helio_facet_data = [np.c_[t[:, 1], t[:, 2], t[:, 3] + 0.1778, t[:, 6:9]] for t in tables]   
+    field.helio_facet_data = [np.c_[t[:, 1], t[:, 2], t[:, 3] + 0.1778, t[:, 6:9]] for t in tables]
     PT = field.set_up_soltrace()
     field.thermal = ReceiverThermal()
     field.snout_thermal = SnoutThermal(field.results['sp_parameters'], field.snout, field.snout_panels)
@@ -71,7 +71,7 @@ def set_aims(field, offsets, axes):
     center, u_h, u_v = axes
     for h, (dx, dv) in zip(field.heliostats, offsets):
         h.aim_point = Point(*(center + dx * u_h + dv * u_v))
-        
+
 # dx and dv on the aperture, transformed to a global xyz aim point
 
 def offsets_to_xyz(offsets, axes): # aim point destination
@@ -84,7 +84,7 @@ def offsets_to_xyz(offsets, axes): # aim point destination
 def set_aim_xyz(field, xyz): # aim point current position
     for h, p in zip(field.heliostats, xyz):
         h.aim_point = Point(*p)
-        
+
 # Discrete aim points
 
 def aim_grid(field, n_cols = 3, n_rows = 4, margin = 0.15):
@@ -154,34 +154,62 @@ def warm_up_snout(field, PT, t_aperture_c, dt_s=60.0, max_minutes=240, tol_c=0.5
 # An episode has to move through time, so the sun must come from a day and an hour instead
 # The environment will keep a variable "hour" and add dt/60 to it every step
 
-from util import sun_position
+from util import sun_position, meinel_clearsky
 
 LATITUDE = 34.96 # SANDIA
 
 def sun_at(day, hour):
     return sun_position(LATITUDE, day, hour)
 
+# ---- DNI for one minute. Three models, pick one with AimingEnv(dni_model=...) ----
+#   constant : 950 W/m2 all day, the old behaviour
+#   clearsky : Meinel clear-sky model from util.py (the one SolarPILOT uses), DNI from sun height and site altitude
+#   tmy      : hourly measured DNI from a TMY3 file, interpolated to the minute (real clouds, hourly resolution)
+ALTITUDE_KM = 1.62                                                   # NSTTF, Albuquerque
+TMY_FILE = 'weather_files/USA NM Albuquerque Intl Arpt (TMY3).csv'   # not in the repo yet: TMY3 station 723650 from NREL NSRDB
+
+def dni_constant(day, hour, sun_el):
+    return 950.0 if sun_el > 0 else 0.0
+
+def dni_clearsky(day, hour, sun_el):
+    return meinel_clearsky(day, np.radians(90.0 - sun_el), ALTITUDE_KM)
+
+_tmy_hourly = {}
+def dni_tmy(day, hour, sun_el):
+    if 'dni' not in _tmy_hourly:                                     # read the file once
+        for metadata_rows in (2, 1):                                 # SAM CSV has 2 header rows, raw TMY3 has 1
+            table = pd.read_csv(TMY_FILE, skiprows=metadata_rows)
+            dni_columns = [c for c in table.columns if c.upper().startswith('DNI')]
+            if dni_columns:
+                break
+        _tmy_hourly['dni'] = table[dni_columns[0]].to_numpy(dtype=float)
+    hourly = _tmy_hourly['dni']
+    hour_of_year = (day - 1) * 24 + hour                             # solar hour used as local hour (up to ~30 min off)
+    return float(np.interp(hour_of_year, np.arange(len(hourly)) + 0.5, hourly))
+
+DNI_MODELS = dict(constant=dni_constant, clearsky=dni_clearsky, tmy=dni_tmy)
+
 # test: same aim points, sun advancing one minute per trace
-if __name__ == "__main__":    
+if __name__ == "__main__":
     field, PT = build_field()
     axes = receiver_axes(field)
     grid = aim_grid(field, n_cols=3, n_rows=4, margin=0.15)
     n = len(field.heliostats)
-    
+
     print("aim menu, k: (dx,dv) in meters")
     for k, (dx, dv) in enumerate(grid):
         print(f"  {k:2d}: ({dx:5.2f}, {dv:5.2f})")
-        
+
     az, el = sun_at(172, 9.0)
-    
+
     # A: every mirror on point 4, the nearest to the center
     set_aims_discrete(field, np.full(n,4), grid, axes)
     res_A, flux_A = trace(PT, field, az, el)
-    
+
     # B: mirrors dealt around all 12 points in turn
     set_aims_discrete(field, np.arange(n) % len(grid), grid, axes)
     res_B, flux_B = trace(PT, field, az, el)
-    
+
     for key in ['Absorbed power (kW)', 'Intercept efficiency (%)']:
         print(f"{key:28s}  A: {res_A[key]:10.2f}   B: {res_B[key]:10.2f}")
     print(f"{'peak flux on curtain (kW/m2)':28s}  A: {flux_A.max():10.2f}   B: {flux_B.max():10.2f}")
