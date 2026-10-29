@@ -20,7 +20,6 @@
 - Depth 0.70 m
 - Side panels 48° each; top panel 0°; bottom panel 34° down
 - Aperture 1.32 m x 1.32 m, center at 45.48 m, azimuth 19.414°
-- Our sources disagree: aperture 1.30 or 1.325 m; angles ~75°, 4°, 32°
 
 ### 3. SNOUT wall build-up (RSLE-57?)
 
@@ -47,7 +46,6 @@
 
 **Current model:**
 - Normal operating hours only; plant starts already running
-- SNOUT walls start at ambient and heat up over time
 
 ## Model items we are refining (no input needed)
 
