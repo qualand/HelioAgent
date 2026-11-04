@@ -105,7 +105,21 @@ def add_snout(PT, sp_params, snout, optic):
         panel.surface_flat()
         panel.optic = optic
         panel.comment = 'SNOUT ' + panel_name
-        panels.append(dict(name=panel_name, element=panel, centroid=centroid, rotation=rotation, local_xy=local_xy))
+
+        # Grid frame for binning hits and for the thermal cells: x along the aperture edge (corners 0 -> 1),
+        # y across the panel toward the front. SolTrace's local x is horizontal in global coordinates, which
+        # is 19 deg off the aperture edge on the top and bottom walls; a grid in that frame comes out slanted.
+        hinge = corners[1] - corners[0]
+        hinge /= np.linalg.norm(hinge)
+        across = 0.5 * (corners[2] + corners[3]) - 0.5 * (corners[0] + corners[1])
+        across -= (across @ hinge) * hinge
+        across /= np.linalg.norm(across)
+        grid_axes = np.array([hinge, across])
+        grid_xy = (corners - centroid) @ grid_axes.T
+        if np.sum(grid_xy[:, 0] * np.roll(grid_xy[:, 1], -1) - np.roll(grid_xy[:, 0], -1) * grid_xy[:, 1]) < 0:
+            grid_xy = grid_xy[::-1]                                 # counter-clockwise, as clip_cell and inside_quadrilateral expect
+        panels.append(dict(name=panel_name, element=panel, centroid=centroid, rotation=rotation, local_xy=local_xy,
+                           grid_axes=grid_axes, grid_xy=grid_xy))
     return snout_stage, panels
 
 # True for the points (local x-y) that lie inside a convex quadrilateral given counter-clockwise
@@ -117,37 +131,49 @@ def inside_quadrilateral(corners_xy, points_xy):
         inside &= cross >= -1e-12
     return inside
 
-# Incident flux map [kW/m2] on one SNOUT panel from the last trace, on an nbins x nbins grid.
-# Same idea as PT.bin_rays(): count the ray hits in each cell and divide by the cell area.
-# The panel is a trapezoid, so cells on its slanted edges are only partly inside the panel.
-# The area of each cell inside the panel comes from a fine sub-grid; cells less than a quarter
-# inside are set to zero so a few rays on a sliver of a cell cannot fake a hot spot.
-def panel_flux_map(PT, panel, nbins=10, subsamples=8):
-    local_xy = panel['local_xy']
-    x_edges = np.linspace(local_xy[:, 0].min(), local_xy[:, 0].max(), nbins + 1)
-    y_edges = np.linspace(local_xy[:, 1].min(), local_xy[:, 1].max(), nbins + 1)
-    cell_width, cell_height = x_edges[1] - x_edges[0], y_edges[1] - y_edges[0]
+# Uniform grid on a panel: nbins x nbins over the bounding box of its outline in the grid frame (x along the aperture edge).
+# The thermal model uses its own graded mesh instead (SnoutThermal.panel_edges); this one is for plots.
+def panel_bin_edges(panel, nbins):
+    grid_xy = panel['grid_xy']
+    x_edges = np.linspace(grid_xy[:, 0].min(), grid_xy[:, 0].max(), nbins + 1)
+    y_edges = np.linspace(grid_xy[:, 1].min(), grid_xy[:, 1].max(), nbins + 1)
+    return x_edges, y_edges
 
-    # Fraction of each cell that lies inside the panel
-    sub_x = x_edges[0] + (np.arange(nbins * subsamples) + 0.5) * cell_width / subsamples
-    sub_y = y_edges[0] + (np.arange(nbins * subsamples) + 0.5) * cell_height / subsamples
-    grid_x, grid_y = np.meshgrid(sub_x, sub_y)
-    inside = inside_quadrilateral(local_xy, np.c_[grid_x.ravel(), grid_y.ravel()]).reshape(grid_x.shape)
-    fraction_inside = inside.reshape(nbins, subsamples, nbins, subsamples).mean(axis=(1, 3))
-    cell_area = fraction_inside * cell_width * cell_height
-
-    # Ray hits on this panel, moved into the panel's local x-y frame (ray positions are in stage
-    # coordinates, and the SNOUT stage frame is the global frame)
+# Ray power [W] landing in each bin of one panel from the last trace: hit counts times power per
+# ray, no area involved. Every hit counts, reflected or absorbed, so this is the incident power.
+# The bin edges come from the thermal model (SnoutThermal.panel_edges), which divides the power
+# by the true area of its own cells (SnoutThermal.step).
+def panel_power_map(PT, panel, x_edges, y_edges):
     rays = PT.raydata
     element = panel['element']
     hits = rays[(rays['stage'] == element.stage_id + 1) & (rays['element'].abs() == element.id + 1)]
-    hit_xy = (hits[['loc_x', 'loc_y', 'loc_z']].to_numpy() - panel['centroid']) @ panel['rotation'][:2].T
+    hit_xy = (hits[['loc_x', 'loc_y', 'loc_z']].to_numpy() - panel['centroid']) @ panel['grid_axes'].T
     counts, _, _ = np.histogram2d(hit_xy[:, 1], hit_xy[:, 0], bins=[y_edges, x_edges])
+    return counts * PT.powerperray
 
-    flux = np.where(fraction_inside > 0.25, counts * PT.powerperray / np.maximum(cell_area, 1e-12), 0.0)
+# Incident flux map [kW/m2] on one SNOUT panel from the last trace, on any grid (uniform or graded edges).
+# Same idea as PT.bin_rays(): count the ray hits in each bin and divide by the bin area.
+# The panel is a trapezoid, so bins on its slanted edges are only partly inside the panel.
+# The area of each bin inside the panel comes from a fine sub-grid; bins less than a quarter
+# inside are set to zero so a few rays on a sliver of a bin cannot fake a hot spot.
+# For plots. The thermal model uses panel_power_map and its own merged cells instead.
+def panel_flux_map(PT, panel, x_edges, y_edges, subsamples=8):
+    local_xy = panel['grid_xy']
+    n_cols, n_rows = len(x_edges) - 1, len(y_edges) - 1
+    offsets = (np.arange(subsamples) + 0.5) / subsamples
+    sub_x = (x_edges[:-1, None] + np.diff(x_edges)[:, None] * offsets).ravel()
+    sub_y = (y_edges[:-1, None] + np.diff(y_edges)[:, None] * offsets).ravel()
+    grid_x, grid_y = np.meshgrid(sub_x, sub_y)
+    inside = inside_quadrilateral(local_xy, np.c_[grid_x.ravel(), grid_y.ravel()]).reshape(grid_x.shape)
+    fraction_inside = inside.reshape(n_rows, subsamples, n_cols, subsamples).mean(axis=(1, 3))
+    bin_area = fraction_inside * np.outer(np.diff(y_edges), np.diff(x_edges))
+
+    power = panel_power_map(PT, panel, x_edges, y_edges)
+    flux = np.where(fraction_inside > 0.25, power / np.maximum(bin_area, 1e-12), 0.0)
     return flux / 1e3
 
-# Absorbed power [kW] and peak incident flux [kW/m2] on each panel from the last trace
+# Absorbed power [kW] on each panel from the last trace. The peak incident flux per panel is
+# reported by SnoutThermal.step on its own cells.
 def snout_results(PT, panels):
     rays = PT.raydata
     results = {}
@@ -155,5 +181,4 @@ def snout_results(PT, panels):
         element = panel['element']
         absorbed = rays[(rays['stage'] == element.stage_id + 1) & (rays['element'] == -(element.id + 1))]
         results['SNOUT ' + panel['name'] + ' absorbed (kW)'] = len(absorbed) * PT.powerperray / 1e3
-        results['SNOUT ' + panel['name'] + ' peak flux (kW/m^2)'] = panel_flux_map(PT, panel).max()
     return results

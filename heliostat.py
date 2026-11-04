@@ -270,13 +270,14 @@ class heliostat:
             element.position += self.position
             element.aim += self.position            
 
-    def update_geometry(self, PT:PySolTrace, azimuth: float, elevation: float):
+    def update_geometry(self, PT:PySolTrace, azimuth: float, elevation: float, verify: bool = True):
         """
         Update heliostat geometry based on solar position (azimuth and elevation)
 
         :param PT: PySolTrace instance
         :param azimuth: [deg] Solar azimuth angle
         :param elevation: [deg] Solar elevation angle
+        :param verify: check that the facets kept their relative positions (625 pairs per heliostat, slow); False in training
         """
         # Calculate and update solar position
         sun_vec = sun_vector(azimuth, elevation)
@@ -329,13 +330,14 @@ class heliostat:
             element.zrot = euler_angles[2]  
 
         # Testing relative positions and aimpoints
-        for i, ref_el in enumerate(self.get_elements()):
-            for j, el in enumerate(self.get_elements()):
-                rel_pos = (el.position - ref_el.position).radius()
-                assert abs(self.rel_positions[i,j] - rel_pos) <= 1e-6
+        if verify:
+            for i, ref_el in enumerate(self.get_elements()):
+                for j, el in enumerate(self.get_elements()):
+                    rel_pos = (el.position - ref_el.position).radius()
+                    assert abs(self.rel_positions[i,j] - rel_pos) <= 1e-6
 
-                rel_aim = (el.aim - ref_el.aim).radius()
-                assert abs(self.rel_aimpoints[i,j] - rel_aim) <= 1e-6
+                    rel_aim = (el.aim - ref_el.aim).radius()
+                    assert abs(self.rel_aimpoints[i,j] - rel_aim) <= 1e-6
 
         # If surfaces were flipped, flip them back
         if surfaces_were_flipped:

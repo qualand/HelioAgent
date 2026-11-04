@@ -43,7 +43,8 @@ class ReceiverThermal:
         if incident_kw < self.min_power_kw:
             return dict(converged=False, incident_kw=incident_kw, particle_kw=0.0, thermal_kw=0.0, efficiency=0.0,
                         mass_flow=0.0, particle_out_c=receiver.Tpin - 273.15, particle_max_c=receiver.Tpin - 273.15, wall_max_c=ambient_c,
-                        aperture_ir_kw=0.0)
+                        aperture_ir_kw=0.0, aperture_eff_c=ambient_c,
+                        particle_out_columns_c=np.full(receiver.nx, receiver.Tpin - 273.15))
         receiver.flux_profile_input = flux
         receiver.Tamb = ambient_c + 273.15
         receiver.Tsky = receiver.Tamb - 20.0
@@ -51,6 +52,9 @@ class ReceiverThermal:
         receiver.wdir = wind_direction
         converged = receiver.simulate()
         results = receiver.results
+        ap_area = receiver.ap_height ** 2 * receiver.ap_aspect_ratio
+        ir_out_w_m2 = max(results['QIR'], 0.0) * 1e6 / ap_area + 5.6704e-8 * receiver.Tsky ** 4   # IR leaving the cavity through the aperture; QIR is net of the sky's share
+        aperture_eff_c = (ir_out_w_m2 / 5.6704e-8) ** 0.25 - 273.15                                 # black body that radiates the same power: what the SNOUT sees
         return dict(converged=bool(converged),
                     incident_kw=float(results['Qinc'] * 1e3),
                     particle_kw=float(results['Qp'] * 1e3),
@@ -60,4 +64,6 @@ class ReceiverThermal:
                     particle_out_c=float(results['Tpout'] - 273.15),
                     particle_max_c=float(results['Tpmax'] - 273.15),
                     wall_max_c=float(results['Twmax'] - 273.15),
-                    aperture_ir_kw=float(results['QIR'] * 1e3))     # net infrared out through the aperture (QIR is in MW)
+                    aperture_ir_kw=float(results['QIR'] * 1e3),     # net infrared out through the aperture (QIR is in MW)
+                    aperture_eff_c=float(aperture_eff_c),
+                    particle_out_columns_c=results['Tp'][-1, :] - 273.15)   # bottom row of the curtain grid: outlet temperature per column
