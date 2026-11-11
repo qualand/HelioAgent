@@ -4,7 +4,7 @@
 
 ### 1. Heliostats used for the G3P3 tower
 
-**Question:** Which heliostats serve G3P3 (219 or 218)? ID, position, canting.
+**Question:** Which heliostats serve G3P3? ID, position, canting.
 
 **Current model:**
 - 218 heliostats, NSTTF rows 5 to 14
@@ -17,10 +17,9 @@
 ### 2. SNOUT geometry
 
 **Current model:**
-- Depth 0.70 m
+- Depth 0.70 m (Mills et al. 2024)
 - Side panels 48° each; top panel 0°; bottom panel 34° down
 - Aperture 1.32 m x 1.32 m, center at 45.48 m, azimuth 19.414°
-- Our sources disagree: aperture 1.30 or 1.325 m; angles ~75°, 4°, 32°
 
 ### 3. SNOUT wall build-up (RSLE-57?)
 
@@ -28,7 +27,6 @@
 - One RSLE-57 sheet, 25 mm (assumed), no backing layer
 - Density 2100 kg/m³, conductivity 0.7 W/m K, cp 1000 J/kg K (assumed)
 - Solar absorptivity 0.2 (Mills et al. 2024); infrared emissivity 0.8 (assumed)
-- No wind; ambient 20 °C
 
 ### 4. Maximum allowable temperatures on the receiver and SNOUT
 
@@ -47,7 +45,6 @@
 
 **Current model:**
 - Normal operating hours only; plant starts already running
-- SNOUT walls start at ambient and heat up over time
 
 ## Model items we are refining (no input needed)
 
