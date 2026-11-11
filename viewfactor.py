@@ -1,25 +1,19 @@
-# Analytic view factor between two arbitrarily oriented planar polygons.
-# Python port of viewFactor.m v1.5 by Jacob Kerkhoff (UW-Madison Solar Energy Laboratory),
-# which implements Narayanaswamy (2015), Int. J. Heat Mass Transfer 91:841-847.
-# https://github.com/uw-esolab/docs/blob/main/tools/viewfactor/viewfactor.md
-# Polygons must be planar, simple and fully visible to each other (true in a convex enclosure).
-
 import numpy as np
 
+#--- Analytic view factor between two arbitrarily oriented planar polygons: Narayanaswamy (2015), Int. J. Heat Mass Transfer 91:841-847.
+#    Python port of viewFactor.m v1.5 by Jacob Kerkhoff (UW-Madison Solar Energy Laboratory), github.com/uw-esolab/docs tools/viewfactor.
+#    Polygons must be planar, simple and fully visible to each other (true in a convex enclosure).
 ALMOST_ZERO = 1e-7
-
-# Chebyshev coefficients for Clausen's integral, paper Table 1
-CHEB_B = np.array([1.865555351433979e-1, 6.269948963579612e-2, 3.139559104552675e-4,
+CHEB_B = np.array([1.865555351433979e-1, 6.269948963579612e-2, 3.139559104552675e-4,       # Chebyshev coefficients for Clausen's integral, paper Table 1
                    3.916780537368088e-6, 6.499672439854756e-8, 1.238143696612060e-9,
                    5.586505893753557e-13])
 
 
+#--- Clausen's integral Cl2(theta), paper Eq. (26): the part of the dilogarithm the edge integrals need
 def clausen(theta):
-    # Clausen's integral Cl2(theta), paper Eq. (26): the part of the dilogarithm we need
     theta = np.mod(theta, 2 * np.pi)
     x = theta / np.pi - 1
-    # Chebyshev polynomials T_{2n+1}(x), n = 0..6
-    T = [x,
+    T = [x,                                                                   # Chebyshev polynomials T_{2n+1}(x), n = 0..6
          4*x**3 - 3*x,
          16*x**5 - 20*x**3 + 5*x,
          64*x**7 - 112*x**5 + 56*x**3 - 7*x,
@@ -32,8 +26,8 @@ def clausen(theta):
             + float(np.dot(CHEB_B, T)))
 
 
+#--- Imaginary part of the dilogarithm Li2(1 - mag e^{i angle}), paper Eq. (24)
 def imag_li2(mag, angle):
-    # Imaginary part of the dilogarithm Li2(1 - mag*e^{i*angle}), paper Eq. (24)
     if mag > ALMOST_ZERO:
         omega = np.arctan2(mag * np.sin(angle), 1 - mag * np.cos(angle))
         return (0.5 * clausen(2*angle) + 0.5 * clausen(2*omega)
@@ -41,8 +35,8 @@ def imag_li2(mag, angle):
     return mag * np.sin(angle)
 
 
+#--- Edge-pair contribution when the two edges are skew, paper Eq. (22b)
 def f_skew(s, l, alpha, cos_a, sin_a, d):
-    # Paper Eq. (22b): edge-pair contribution when the two edges are skew
     s2, l2, d2, sin2 = s*s, l*l, d*d, sin_a*sin_a
     wsqrt = np.sqrt(s2 + d2 / sin2)
     psqrt = np.sqrt(l2 + d2 / sin2)
@@ -55,8 +49,8 @@ def f_skew(s, l, alpha, cos_a, sin_a, d):
                                     - 2 * imag_li2((wdim - 2*s)/pdim, np.pi - alpha)))
 
 
+#--- Edge-pair contribution when the two edges are parallel, paper Eq. (23)
 def f_parallel(s, l, d):
-    # Paper Eq. (23): the limit when the two edges are parallel
     if d == 0:
         d = ALMOST_ZERO
     sl = s - l
@@ -65,9 +59,8 @@ def f_parallel(s, l, d):
             + s*l)
 
 
+#--- Shortest distance between the infinite lines through two edges, and the origins and directions of the paper's Fig. 5 parameterization
 def edge_pair_parameters(Po, Pf, Qo, Qf):
-    # Shortest distance between the infinite lines through the two edges, and the
-    # parameterization (origins and directions) the paper's Fig. 5 defines
     u = Pf - Po
     v = Qf - Qo
     w = Po - Qo
@@ -77,20 +70,19 @@ def edge_pair_parameters(Po, Pf, Qo, Qf):
     d_ = np.dot(u, w)
     e = np.dot(v, w)
     den = 1 - b*b
-    if den > ALMOST_ZERO:          # skew (not parallel) edges
+    if den > ALMOST_ZERO:                                                     # Skew (not parallel) edges
         skew = True
         s = (b*e - d_) / den
         l = (e - b*d_) / den
         D = np.linalg.norm(w + s*u - l*v)
-    else:                           # parallel edges
+    else:                                                                     # Parallel edges
         skew = False
         s = 0.0
         l = e
         D = np.linalg.norm(w - e*v)
     s_origin = Po + u*s
     l_origin = Qo + v*l
-    # unit vectors point from the origin toward the farther of the two vertices
-    if abs(s) < np.linalg.norm(Pf - s_origin):
+    if abs(s) < np.linalg.norm(Pf - s_origin):                                # Unit vectors point from the origin toward the farther vertex
         s_hat = (Pf - s_origin) / np.linalg.norm(Pf - s_origin)
     else:
         s_hat = (Po - s_origin) / np.linalg.norm(Po - s_origin)
@@ -101,38 +93,34 @@ def edge_pair_parameters(Po, Pf, Qo, Qf):
     return D, s_origin, s_hat, l_hat, l_origin, skew
 
 
-def clean_polygon(poly, tol=1e-9):
-    # Drop repeated consecutive vertices (a clip can produce them when a corner
-    # lands exactly on the clipping edge); they create zero-length edges
-    poly = [np.asarray(p, dtype=float) for p in poly]
+#--- Drop repeated consecutive vertices (a clip can produce them when a corner lands on the clipping edge); they make zero-length edges
+def clean_polygon(poly, tol = 1e-9):
+    poly = [np.asarray(p, dtype = float) for p in poly]
     kept = [p for k, p in enumerate(poly) if np.linalg.norm(p - poly[k - 1]) > tol]
     return kept
 
 
+#--- Area of a planar polygon from its 3D vertices (Newell's method: robust even when the first vertices are collinear)
 def polygon_area(poly):
-    # Area of a planar polygon from its 3D vertices (Newell's method: robust
-    # even when the first vertices are collinear)
-    poly = np.asarray(poly, dtype=float)
+    poly = np.asarray(poly, dtype = float)
     total = np.zeros(3)
     for i in range(len(poly)):
         total += np.cross(poly[i], poly[(i + 1) % len(poly)])
     return np.linalg.norm(total) / 2
 
 
+#--- View factors F_ab and F_ba between polygon A and polygon B, each an (N, 3) array of vertices in order around the perimeter
 def view_factor(poly_a, poly_b):
-    # F from polygon A to polygon B and back: (F_ab, F_ba).
-    # Each polygon: (N,3) array of vertices in order around the perimeter.
-    A = np.asarray(clean_polygon(poly_a), dtype=float)
-    B = np.asarray(clean_polygon(poly_b), dtype=float)
+    A = np.asarray(clean_polygon(poly_a), dtype = float)
+    B = np.asarray(clean_polygon(poly_b), dtype = float)
     area_a = polygon_area(A)
     area_b = polygon_area(B)
     total = 0.0
-    for p in range(len(B)):                 # every edge of B...
-        for i in range(len(A)):             # ...against every edge of A, Eq. (22a)
+    for p in range(len(B)):                                                   # Every edge of B against every edge of A, Eq. (22a)
+        for i in range(len(A)):
             r_i, r_j = A[i], A[(i + 1) % len(A)]
             r_p, r_q = B[p].copy(), B[(p + 1) % len(B)].copy()
-            # coincident vertices (shared corner) break the parameterization: nudge B
-            if (np.linalg.norm(r_i - r_p) < ALMOST_ZERO/2 or np.linalg.norm(r_j - r_p) < ALMOST_ZERO/2):
+            if (np.linalg.norm(r_i - r_p) < ALMOST_ZERO/2 or np.linalg.norm(r_j - r_p) < ALMOST_ZERO/2):   # A shared corner breaks the parameterization: nudge B
                 r_p = r_p + ALMOST_ZERO
             elif (np.linalg.norm(r_i - r_q) < ALMOST_ZERO/2 or np.linalg.norm(r_j - r_q) < ALMOST_ZERO/2):
                 r_q = r_q + ALMOST_ZERO
@@ -150,12 +138,12 @@ def view_factor(poly_a, poly_b):
                                   - f_skew(s_j, l_p, alpha, cos_a, sin_a, dmin)
                                   + f_skew(s_i, l_p, alpha, cos_a, sin_a, dmin))
             else:
-                l_hat = s_hat                # the parallel case measures l along s_hat
+                l_hat = s_hat                                                 # The parallel case measures l along s_hat
                 s_i = np.dot(r_i - s_origin, s_hat)
                 s_j = np.dot(r_j - s_origin, s_hat)
                 l_p = np.dot(r_p - l_origin, l_hat)
                 l_q = np.dot(r_q - l_origin, l_hat)
                 total += (f_parallel(s_j, l_q, dmin) - f_parallel(s_i, l_q, dmin)
                           - f_parallel(s_j, l_p, dmin) + f_parallel(s_i, l_p, dmin))
-    rad_ua = abs(total) / (4 * np.pi)        # A_a * F_ab = A_b * F_ba, reciprocity built in
+    rad_ua = abs(total) / (4 * np.pi)                                         # A_a F_ab = A_b F_ba: reciprocity built in
     return rad_ua / area_a, rad_ua / area_b
