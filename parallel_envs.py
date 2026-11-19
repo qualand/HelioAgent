@@ -9,7 +9,7 @@ def worker(connection, env_kwargs, reset_kwargs, seed):
     env = HelioAimingGym(env_kwargs = env_kwargs, reset_kwargs = reset_kwargs)
     rng = np.random.default_rng(seed)
     obs, _ = env.reset(seed = int(rng.integers(1 << 30)))
-    connection.send(dict(obs = obs, positions = env.env.kin.pos, n = env.env.n, n_points = len(env.env.grid)))
+    connection.send(dict(obs = obs, positions = env.env.kin.pos, n = env.env.n, n_points = env.env.n_actions))   # n_points: menu points plus standby
     while True:
         command, data = connection.recv()
         if command == 'step':

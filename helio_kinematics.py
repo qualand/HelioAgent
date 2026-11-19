@@ -24,6 +24,7 @@ class HelioKinematics:
         self.az = None                                                          # Current azimuth of every mirror normal (rad)
         self.el = None                                                          # Current elevation (rad)
         self.travel = 0.0                                                       # Radians moved by all motors in the last step
+        self.travel_per_mirror = None                                           # (n,) radians moved by each mirror's two motors in the last step
         return
 
     #--- Normal that sends the sun to aim_xyz (law of reflection, as in heliostat.update_geometry), as azimuth and elevation
@@ -41,6 +42,7 @@ class HelioKinematics:
         self.az = np.array(az, dtype = float)
         self.el = np.array(el, dtype = float)
         self.travel = 0.0
+        self.travel_per_mirror = np.zeros(len(self.az))
         return
 
     #--- Move each motor toward its target by at most rate * dt_s radians; returns True where the mirror arrived
@@ -52,7 +54,8 @@ class HelioKinematics:
         step_el = np.clip(d_el, -lim, lim)
         self.az = self.az + step_az
         self.el = self.el + step_el
-        self.travel = float(np.sum(np.abs(step_az) + np.abs(step_el)))      # Radians moved by all motors this step, for the motor-travel term
+        self.travel_per_mirror = np.abs(step_az) + np.abs(step_el)          # Radians each mirror's two motors moved this step
+        self.travel = float(self.travel_per_mirror.sum())                    # All motors together, for the motor-travel term
         return np.maximum(np.abs(d_az), np.abs(d_el)) <= lim
 
     #--- Where each beam lands now: reflect the sun about the current normal and walk dist m along it.

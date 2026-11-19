@@ -33,7 +33,7 @@ def run_episode(env, policy = None, start = 'spread', seed = 0, deterministic = 
 #------------------------------------------------------------------------------
 #------------------------------------------------------------------------------
 #--- Compare a trained policy with the simple aiming it starts from (every heliostat on the aperture center, left there), same day, hour and rays
-#      python evaluate_episode.py runs/night_08_nolimit/checkpoint.pt --wall-limit 1500 --stochastic
+#      python evaluate_episode.py runs/night_09/checkpoint.pt --stochastic
 #      add --rule for the image-size rule as a third line; writes eval_<name>.csv and eval_agent_vs_center.png
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
@@ -58,7 +58,7 @@ if __name__ == '__main__':
     env = HelioAimingGym(env_kwargs = dict(dt_min = args.dt_min, nray = args.nray, episode_minutes = args.minutes, wall_limit_c = args.wall_limit),
                          reset_kwargs = dict(day = args.day, hour_range = (args.hour, args.hour)))
     assert policy.n == env.env.n, f'checkpoint was trained with {policy.n} heliostats, this field has {env.env.n}'
-    assert state['n_points'] == len(env.env.grid), f"checkpoint was trained with {state['n_points']} aim points, the menu now has {len(env.env.grid)}"
+    assert state['n_points'] == env.env.n_actions, f"checkpoint was trained with {state['n_points']} actions per heliostat, the environment now has {env.env.n_actions}"
 
     #--- The episodes: all on center (fixed), the agent from the center, optionally the image-size rule
     runs = [('all on the center point, fixed', 'center', run_episode(env, None, start = 'center')),
@@ -69,10 +69,10 @@ if __name__ == '__main__':
         log.to_csv(f'eval_{name}.csv', index = False)
     agent = runs[-1][2]
 
-    #--- Figure: reward, the terms, motor travel, aim points changed, SNOUT maximum, step by step
-    fig, axes = plt.subplots(6, 1, figsize = (12, 16), sharex = True)
-    for ax, column, ylabel in zip(axes, ['reward', 'optical_efficiency', 'temperature_unevenness', 'motor_travel', 'n_changed', 'snout_wall_max_c'],
-                                  ['reward', 'optical efficiency', 'temperature unevenness', 'motor travel\n(0 still, 1 full speed)',
+    #--- Figure: reward, the terms, heliostats in standby, motor travel, aim points changed, SNOUT maximum, step by step
+    fig, axes = plt.subplots(7, 1, figsize = (12, 18), sharex = True)
+    for ax, column, ylabel in zip(axes, ['reward', 'optical_efficiency', 'thermal_efficiency', 'n_standby', 'motor_travel', 'n_changed', 'snout_wall_max_c'],
+                                  ['reward', 'optical efficiency', 'thermal efficiency', 'heliostats in standby\n(of 218)', 'motor travel\n(0 still, 1 full speed)',
                                    'aim points changed\nin the step (of 218)', 'SNOUT wall max (C)']):
         for label, name, log in runs:
             if column == 'n_changed':
@@ -80,7 +80,7 @@ if __name__ == '__main__':
             else:
                 ax.plot(log.hour, log[column], 'o-', ms = 3, label = label)
         ax.set_ylabel(ylabel); ax.grid(alpha = 0.3)
-    axes[3].text(0.01, 0.95, 'tracking the sun alone costs about 0.02; aim-point changes show as spikes above it', transform = axes[3].transAxes, va = 'top', fontsize = 9, color = 'gray')
+    axes[4].text(0.01, 0.95, 'tracking the sun alone costs about 0.02; aim-point changes show as spikes above it', transform = axes[4].transAxes, va = 'top', fontsize = 9, color = 'gray')
     axes[-1].axhline(1200, color = 'k', ls = '--', label = '1200 C stop')
     axes[0].legend(loc = 'upper left', bbox_to_anchor = (1.01, 1.0), frameon = False)
     axes[-1].set_xlabel('solar hour')
@@ -89,7 +89,9 @@ if __name__ == '__main__':
 
     #--- Summary per episode
     for label, name, log in runs:
-        print(f"{name:6s}: mean reward {log.reward.mean():.3f}, efficiency {log.optical_efficiency.mean():.3f}, unevenness {log.temperature_unevenness.mean():.3f}, "
-              f"motor travel {log.motor_travel.mean():.4f} (reward cost {0.05 * log.motor_travel.mean():.4f}), aim points changed per step {log.n_changed.mean():.1f}, "
-              f"max wall {max(log.wall_max_c.max(), log.snout_wall_max_c.max()):.0f} C, ended: {log.why.iloc[-1]}")
+        print(f"{name:6s}: mean reward {log.reward.mean():.3f}, eta_opt {log.optical_efficiency.mean():.3f}, eta_th {log.thermal_efficiency.mean():.3f}, "
+              f"standby {log.n_standby.mean():.1f} heliostats, motor travel {log.motor_travel.mean():.4f} (reward cost {0.05 * log.motor_travel.mean():.4f}), "
+              f"aim points changed per step {log.n_changed.mean():.1f}, max wall {max(log.wall_max_c.max(), log.snout_wall_max_c.max()):.0f} C, ended: {log.why.iloc[-1]}")
     print(f"agent changed on average {agent.n_changed.mean():.1f} aim points per step")
+    print(f"optical chain, agent episode means: cosine and shading {agent.cosine_shading_efficiency.mean():.3f} x blocking {agent.blocking_efficiency.mean():.3f} "
+          f"x reflection and attenuation {agent.reflection_attenuation_efficiency.mean():.3f} x intercept {agent.intercept.mean():.3f} = {agent.optical_efficiency.mean():.3f}")

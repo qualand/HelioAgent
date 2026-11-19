@@ -4,7 +4,6 @@ from viewfactor import view_factor, polygon_area, clean_polygon
 
 SIGMA = 5.6704e-8   # Stefan-Boltzmann constant (W/m2/K4)
 
-
 class SnoutThermal:
     def __init__(self, sp_params, snout, panels, params = {}, **overrides):
 
@@ -35,6 +34,9 @@ class SnoutThermal:
         self.air_k0 = 0.0241                # Conductivity at 273 K (W/m/K), scaled by (T/273)^0.8
         self.air_nu0 = 1.33e-5              # Kinematic viscosity at 273 K (m2/s), scaled by (T/273)^1.7
 
+        #--- Conduction along the wall
+        self.lateral_conduction = True      # Heat flow between neighbouring cells of a wall through the sheet, k delta L / d per shared edge; the walls are not joined to each other
+
         #--- Convection on the inside face
         self.natural_convection = True      # Natural convection in still air; forced convection is added per step with h_wind
         self.wall_orientation = dict(top = 'hot_face_down', bottom = 'hot_face_up', east = 'vertical', west = 'vertical')   # Correlation per wall; tilts ignored
@@ -50,6 +52,7 @@ class SnoutThermal:
         self.heat_capacity = self.density * self.specific_heat * self.thickness   # Lumped thermal mass of 1 m2 of wall (J/m2/K)
         self.r_out = self.thickness / self.conductivity                           # Conduction resistance through the sheet to outside air (m2K/W)
         self.set_up_mesh()
+        self.set_up_conduction()
         self.calculate_view_factors()
         return
 
@@ -146,6 +149,8 @@ class SnoutThermal:
         self.panel_edges = []       # (x_edges, y_edges) per panel: the bin grid panel_power_map must use
         self.cell_length = []       # Characteristic length of the wall the cell is on, for natural convection (m)
         self.cell_orientation = []  # Convection correlation of the wall the cell is on
+        self.cell_span = []         # (panel index, row, first bin, last bin + 1) of each cell, for the neighbour search
+        self.cell_center_xy = []    # Cell centroid in the panel's grid frame (m)
         for ip, panel in enumerate(self.panels):
             local_xy = panel['grid_xy']
             x_min, x_max = local_xy[:, 0].min(), local_xy[:, 0].max()
@@ -215,6 +220,8 @@ class SnoutThermal:
                     self.cell_area.append(cell_area)
                     self.cell_length.append(length)
                     self.cell_orientation.append(orientation)
+                    self.cell_span.append((ip, row, start, stop))
+                    self.cell_center_xy.append(((np.asarray(corners_3d) - panel['centroid']) @ panel['grid_axes'].T).mean(axis = 0))
             if small:   # A whole row of slivers with nothing to merge into; rare, its temperature is ray noise
                 print('SnoutThermal: %d cell(s) still smaller than %.0f%% of a bin: %s' % (len(small), 100 * self.min_cell_fraction,
                       ', '.join('%s %.4f m2' % (name, area) for name, area in small)))
@@ -224,9 +231,59 @@ class SnoutThermal:
         self.areas = np.array([o['area'] for o in self.openings] + self.cell_area)
         self.cell_area = np.array(self.cell_area)
         self.cell_length = np.array(self.cell_length)
+        self.cell_center_xy = np.array(self.cell_center_xy)
         self.cell_panel = np.array([p for p, _, _ in self.cells])
         self.convection_groups = [(orientation, np.array([k for k, o in enumerate(self.cell_orientation) if o == orientation]))
                                   for orientation in ('vertical', 'hot_face_down', 'hot_face_up')]
+        return
+
+    #--- Conduction between neighbouring cells of the same wall: C_ij = k delta L_ij / d_ij (W/K) per shared edge, L_ij the length of the edge
+    #    inside the trapezoid and d_ij the distance between the cell centroids. Assembled once as a matrix so that (C @ T) is the heat flow into
+    #    each cell. The four walls are not joined to each other (no flow across the corners). Only through-thickness conduction otherwise.
+    def set_up_conduction(self):
+        n = len(self.cells)
+        self.conduction = np.zeros((n, n))
+        if not self.lateral_conduction:
+            return
+        for ip, panel in enumerate(self.panels):
+            x_edges, y_edges = self.panel_edges[ip]
+            local_xy = panel['grid_xy']
+            y_hinge, y_front = local_xy[:, 1].min(), local_xy[:, 1].max()
+            hinge_x = np.sort(local_xy[np.isclose(local_xy[:, 1], y_hinge), 0])                    # Left and right end of the aperture edge
+            front_x = np.sort(local_xy[np.isclose(local_xy[:, 1], y_front), 0])                    # Left and right end of the outer border
+
+            def x_sides(y):                                                                         # Left and right boundary of the trapezoid at height y
+                f = (y - y_hinge) / (y_front - y_hinge)
+                return hinge_x[0] + (front_x[0] - hinge_x[0]) * f, hinge_x[1] + (front_x[1] - hinge_x[1]) * f
+
+            def y_lowest(x):                                                                        # Lowest y inside the trapezoid on the line x = const
+                if hinge_x[0] <= x <= hinge_x[1]:
+                    return y_hinge
+                x0, x1 = (hinge_x[0], front_x[0]) if x < hinge_x[0] else (hinge_x[1], front_x[1])  # The slanted side it crosses
+                return y_hinge + (x - x0) / (x1 - x0) * (y_front - y_hinge) if x1 != x0 else y_front
+
+            on_panel = [k for k, span in enumerate(self.cell_span) if span[0] == ip]
+            for a in on_panel:
+                _, row_a, start_a, stop_a = self.cell_span[a]
+                for b in on_panel:
+                    if b <= a:
+                        continue
+                    _, row_b, start_b, stop_b = self.cell_span[b]
+                    if row_a == row_b and stop_a == start_b:                                        # Side by side: shared vertical edge at x = x_edges[stop_a]
+                        x = x_edges[stop_a]
+                        shared = max(0.0, y_edges[row_a + 1] - max(y_edges[row_a], y_lowest(x)))
+                    elif abs(row_a - row_b) == 1 and start_a < stop_b and start_b < stop_a:         # One above the other: shared horizontal edge
+                        y = y_edges[max(row_a, row_b)]
+                        left, right = x_sides(y)
+                        shared = max(0.0, min(x_edges[min(stop_a, stop_b)], right) - max(x_edges[max(start_a, start_b)], left))
+                    else:
+                        continue
+                    if shared <= 0:
+                        continue
+                    distance = np.linalg.norm(self.cell_center_xy[a] - self.cell_center_xy[b])
+                    c = self.conductivity * self.thickness * shared / distance
+                    self.conduction[a, b] += c; self.conduction[b, a] += c
+                    self.conduction[a, a] -= c; self.conduction[b, b] -= c
         return
 
     #--- Outline of surface i as 3D corners: a rectangle for an opening, the clipped polygon for a wall cell
@@ -316,7 +373,8 @@ class SnoutThermal:
             q_ir_net = eps * irradiation[self.n_openings:] - emission[self.n_openings:]   # Net infrared into each cell: absorbed minus emitted
             h_conv = self.calculate_convection_coeff(temp, t_amb) + h_wind
             q_convection = h_conv * (temp - t_amb)
-            q_total = q_solar + q_ir_net - q_convection - (temp - t_amb) / self.r_out    # rho c delta dT/dt = solar + infrared - convection - conduction to the back face
+            q_lateral = (self.conduction @ temp) / self.cell_area                       # Conduction from the neighbouring cells of the wall (W/m2), zero net over the wall
+            q_total = q_solar + q_ir_net - q_convection - (temp - t_amb) / self.r_out + q_lateral   # rho c delta dT/dt = solar + infrared - convection - conduction to the back face + along the wall
             self.wall_temp_k = temp + dt * q_total / self.heat_capacity
 
         results = {}
@@ -326,6 +384,8 @@ class SnoutThermal:
             results['SNOUT ' + panel['name'] + ' wall T max (C)'] = temp_c[on_panel].max()
             results['SNOUT ' + panel['name'] + ' peak flux (kW/m^2)'] = q_incident[on_panel].max() / 1e3
         results['SNOUT wall T max (C)'] = temp_c.max()
+        hottest = int(np.argmax(temp_c))
+        results['SNOUT dT/dq (K per W/m2)'] = self.solar_absorptivity / (4 * eps * SIGMA * self.wall_temp_k[hottest] ** 3 + h_conv[hottest] + 1 / self.r_out)   # Steady-state temperature change of the hottest cell per unit of incident flux (about 0.35 mK per W/m2); lateral conduction ignored
         results['SNOUT convection loss (kW)'] = float(np.sum(q_convection * self.cell_area)) / 1e3
         results['SNOUT over temp limit'] = bool(temp_c.max() > self.max_temp_c)
         self.results = results

@@ -32,7 +32,7 @@ def parse_args():
     p.add_argument('--hidden', type = int, default = 128)
     p.add_argument('--embed', type = int, default = 64)
     p.add_argument('--dt-min', type = float, default = 5.0)
-    p.add_argument('--wall-limit', type = float, default = 1200.0, help = 'C; the episode ends with the shutdown penalty above it (receiver walls and SNOUT). Raise it to train without the SNOUT constraint')
+    p.add_argument('--wall-limit', type = float, default = 1200.0, help = 'C; the episode ends with the shutdown penalty above it (receiver walls and SNOUT). night_08 used 1500 to train without the SNOUT constraint')
     p.add_argument('--nray', type = float, default = 1e6, help = 'rays per trace; on the 5 cm mesh the SNOUT maximum reads +30 C of noise at 5e5 and +20 C at 1e6 (snout_mesh_convergence.py)')
     p.add_argument('--episode-minutes', type = int, default = 120, help = '2 h of regular operation; day, start time and start aiming come from AimingEnv.reset')
     p.add_argument('--seed', type = int, default = 0)
@@ -80,7 +80,7 @@ def compute_gae(rewards, values, dones, last_value, gamma, lam):
 def main():
     global torch
     import torch
-    from policy_network import HeliostatPolicy
+    from policy_network import HeliostatPolicy, MIRROR_FEATURES
     args = parse_args()
     os.makedirs(args.out, exist_ok = True)
     torch.manual_seed(args.seed)
@@ -92,8 +92,8 @@ def main():
     print(f'starting {args.n_envs} environments (each builds its own field)...', flush = True)
     envs = ParallelEnvs(args.n_envs, env_kwargs, reset_kwargs = {}, seed = args.seed)
     obs_dim = envs.obs.shape[1]
-    n_plant = obs_dim - 2 * envs.n_heliostats
-    print(f'ready: {envs.n_heliostats} heliostats, {envs.n_points} aim points, observation {obs_dim}', flush = True)
+    n_plant = obs_dim - MIRROR_FEATURES * envs.n_heliostats
+    print(f'ready: {envs.n_heliostats} heliostats, {envs.n_points} actions each (menu points + standby), observation {obs_dim}', flush = True)
 
     #--- Policy, optimizer, resume
     policy = HeliostatPolicy(envs.positions, envs.n_points, n_plant = n_plant, embed = args.embed, hidden = args.hidden).to(device)
@@ -105,8 +105,10 @@ def main():
     if args.resume:
         state = torch.load(args.resume, map_location = device, weights_only = False)
         policy.load_state_dict(state['policy']); optimizer.load_state_dict(state['optimizer'])
+        for group in optimizer.param_groups:
+            group['lr'] = args.lr                                                # The saved optimizer carries the old learning rate; --lr on the command line wins
         update, steps_done = state['update'], state['steps']
-        print(f'resumed from {args.resume} at update {update}, {steps_done} steps')
+        print(f'resumed from {args.resume} at update {update}, {steps_done} steps, learning rate {args.lr:g}, entropy coefficient {args.ent_coef:g}')
 
     #--- Logging: log.csv (one row per update) and tensorboard if installed
     try:
@@ -116,14 +118,15 @@ def main():
         writer = None
     log_file = open(os.path.join(args.out, 'log.csv'), 'a', newline = '')
     log = csv.writer(log_file)
+    logged_terms = ('optical_efficiency', 'thermal_efficiency', 'motor_travel', 'snout_margin', 'standby_fraction', 'wall_max_c', 'snout_wall_max_c', 'intercept')   # Means over the steps of each update
     if log_file.tell() == 0:
-        log.writerow(['update', 'steps', 'seconds', 'reward_mean', 'episode_return', 'optical_efficiency', 'on_setpoint',
-                      'temperature_unevenness', 'motor_travel', 'wall_max_c', 'snout_wall_max_c', 'intercept', 'policy_loss', 'value_loss', 'entropy', 'approx_kl'])
+        log.writerow(['update', 'steps', 'seconds', 'reward_mean', 'episode_return', 'episode_steps', 'shutdowns', *logged_terms, 'policy_loss', 'value_loss', 'entropy', 'approx_kl'])
 
     obs = torch.as_tensor(envs.obs, dtype = torch.float32, device = device)
     hidden = policy.initial_hidden(args.n_envs, device)
     mask = torch.ones(args.n_envs, device = device)
     episode_returns, running_return = [], np.zeros(args.n_envs, dtype = np.float32)
+    episode_steps, running_steps = [], np.zeros(args.n_envs, dtype = int)         # Length of the episodes that ended; a full one is episode_minutes / dt_min steps
     T, B = args.n_steps, args.n_envs
     started = time.perf_counter()
 
@@ -137,7 +140,7 @@ def main():
         buf_val, buf_rew, buf_done = np.zeros((T, B), np.float32), np.zeros((T, B), np.float32), np.zeros((T, B), np.float32)
         buf_local = np.zeros((T, B, envs.n_heliostats), np.float32)                 # Per-heliostat credit of every step
         hidden0 = hidden.clone()                                                     # Memory at the start of the batch, re-run during the update
-        term_sums = {}
+        term_sums, shutdowns = {}, 0
         for t in range(T):
             action, log_prob, value, hidden = policy.act(obs, hidden, mask)
             buf_obs[t], buf_act[t], buf_logp[t], buf_mask[t], buf_val[t] = obs, action, log_prob, mask, value.cpu().numpy()
@@ -145,12 +148,15 @@ def main():
             buf_rew[t], buf_done[t] = rewards, dones
             return_scale.update(rewards, dones.astype(np.float32))
             running_return += rewards
+            running_steps += 1
             for k, done in enumerate(dones):
                 if done:
                     episode_returns.append(running_return[k]); running_return[k] = 0.0
+                    episode_steps.append(running_steps[k]); running_steps[k] = 0
+                    shutdowns += infos[k]['why'] == 'wall_over_temp'                  # Episodes this update that ended with a wall over the limit
             buf_local[t] = np.stack([info['heliostat_credit'] for info in infos])
             for info in infos:
-                for key in ('optical_efficiency', 'on_setpoint', 'temperature_unevenness', 'motor_travel', 'wall_max_c', 'snout_wall_max_c', 'intercept'):
+                for key in logged_terms:
                     term_sums[key] = term_sums.get(key, 0.0) + info[key]
             obs = torch.as_tensor(next_obs, dtype = torch.float32, device = device)
             mask = torch.as_tensor(1.0 - dones, dtype = torch.float32, device = device)   # Wipe the memory where an episode ended
@@ -194,8 +200,8 @@ def main():
         seconds = time.perf_counter() - started
         terms = {key: value / (T * B) for key, value in term_sums.items()}
         recent_return = float(np.mean(episode_returns[-20:])) if episode_returns else float('nan')
-        row = [update, steps_done, round(seconds), buf_rew.mean(), recent_return] + [terms[k] for k in
-              ('optical_efficiency', 'on_setpoint', 'temperature_unevenness', 'motor_travel', 'wall_max_c', 'snout_wall_max_c', 'intercept')] + \
+        recent_steps = float(np.mean(episode_steps[-20:])) if episode_steps else float('nan')
+        row = [update, steps_done, round(seconds), buf_rew.mean(), recent_return, recent_steps, shutdowns] + [terms[k] for k in logged_terms] + \
               [stats[k] / n_batches for k in ('policy_loss', 'value_loss', 'entropy', 'approx_kl')]
         log.writerow([f'{v:.4f}' if isinstance(v, float) else v for v in row]); log_file.flush()
         if writer:
@@ -206,8 +212,9 @@ def main():
             for key in stats:
                 writer.add_scalar(f'train/{key}', stats[key] / n_batches, steps_done)
         print(f"update {update:4d}  steps {steps_done:7d}  {seconds / 60:6.1f} min  reward/step {buf_rew.mean():6.3f}  "
-              f"episode return {recent_return:7.2f}  efficiency {terms['optical_efficiency']:.3f}  unevenness {terms['temperature_unevenness']:.3f}  intercept {terms['intercept']:.3f}  "
-              f"entropy {stats['entropy'] / n_batches:.3f}  kl {stats['approx_kl'] / n_batches:.4f}", flush = True)
+              f"episode return {recent_return:7.2f} over {recent_steps:4.1f} steps  shutdowns {shutdowns:2d}  eta_opt {terms['optical_efficiency']:.3f}  "
+              f"eta_th {terms['thermal_efficiency']:.3f}  margin {terms['snout_margin']:.3f}  standby {terms['standby_fraction']:.3f}  "
+              f"snout {terms['snout_wall_max_c']:6.0f} C  entropy {stats['entropy'] / n_batches:.3f}  kl {stats['approx_kl'] / n_batches:.4f}", flush = True)
         if update % args.checkpoint_every == 0:
             torch.save(dict(policy = policy.state_dict(), optimizer = optimizer.state_dict(), update = update, steps = steps_done,
                             positions = np.asarray(envs.positions).tolist(), n_points = envs.n_points, n_plant = n_plant, embed = args.embed, hidden = args.hidden),

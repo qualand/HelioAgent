@@ -116,7 +116,7 @@ def set_aims_discrete(field, choice, grid, axes):
 
 #--- Each heliostat's share of the trace, from the same rays: intercept, rays absorbed per curtain column, rays on each SNOUT panel
 #    reward.local_credit turns the counts into per-heliostat credit. A blocked ray that reflects twice is credited to its last mirror (rare).
-def heliostat_rays(PT, field, n_columns = 5):
+def heliostat_rays(PT, field, n_columns = 5, hot_band_m = 0.10):
     rays = PT.raydata
     n = len(field.heliostats)
     in_field = rays['stage'].to_numpy() == 1
@@ -134,11 +134,19 @@ def heliostat_rays(PT, field, n_columns = 5):
     column = np.clip(((sideways + curtain['width'] / 2) / curtain['width'] * n_columns).astype(int), 0, n_columns - 1)   # Curtain column of Janna's grid
     counts = np.bincount(owners[owners >= 0] * n_columns + column, minlength = n * n_columns).reshape(n, n_columns)
     snout = np.zeros((n, len(field.snout_panels)), dtype = int)
+    hot_band = np.zeros((n, len(field.snout_panels)))
     for ip, panel in enumerate(field.snout_panels):
         on_panel = (rays['stage'].to_numpy() == panel['element'].stage_id + 1) & (np.abs(element) == panel['element'].id + 1)   # Incident, absorbed or reflected
         panel_owners = ray_owner[number[on_panel]]
-        snout[:, ip] = np.bincount(panel_owners[panel_owners >= 0], minlength = n)
-    return dict(heliostat_intercept = counts.sum(axis = 1) / n_reflected, heliostat_column_rays = counts, heliostat_snout_rays = snout)
+        known = panel_owners >= 0
+        snout[:, ip] = np.bincount(panel_owners[known], minlength = n)
+        grid_xy = panel['grid_xy']
+        y_edge = grid_xy[:, 1].min()                                                                                    # The aperture edge in the panel's grid frame
+        edge_length = np.ptp(grid_xy[np.isclose(grid_xy[:, 1], y_edge), 0])
+        hit_xy = (rays.loc[on_panel, ['loc_x', 'loc_y', 'loc_z']].to_numpy() - panel['centroid']) @ panel['grid_axes'].T   # Hit points in the grid frame, y from the aperture edge toward the front
+        near_edge = known & (hit_xy[:, 1] - y_edge < hot_band_m)                                                        # The band where the SNOUT maximum always sits
+        hot_band[:, ip] = np.bincount(panel_owners[near_edge], minlength = n) * PT.powerperray / (edge_length * hot_band_m) / 1e3   # Each mirror's incident flux there (kW/m2)
+    return dict(heliostat_intercept = counts.sum(axis = 1) / n_reflected, heliostat_column_rays = counts, heliostat_snout_rays = snout, heliostat_hot_band_kw_m2 = hot_band)
 
 
 #--- Ray trace: one sun position in, flux and temperatures out. No decisions here.

@@ -18,15 +18,16 @@ class HelioAimingGym(gym.Env):
         self.shutdown_penalty = shutdown_penalty                # Taken off the reward when a wall passes the limit and the episode ends:
                                                                 # without it, ending a bad episode (future = 0) beats continuing at a negative reward
 
-        #--- Spaces: one menu point per heliostat; observation = AimingEnv._obs() scaled to about 0..1
-        n_points = len(self.env.grid)
-        self.action_space = spaces.MultiDiscrete([n_points] * self.env.n)
+        #--- Spaces: one action per heliostat (menu point or standby); observation = AimingEnv._obs() scaled to about 0..1
+        self.action_space = spaces.MultiDiscrete([self.env.n_actions] * self.env.n)
         half_width = self.env.grid[:, 0].max()
         n_columns = self.env.field.thermal.receiver.nx          # Curtain columns in Janna's grid (5)
+        n_panels = len(self.env.field.snout_panels)             # SNOUT walls (4)
         self.scale = np.concatenate([
             [24.0, 360.0, 90.0, 1000.0],                       # Hour, sun azimuth, sun elevation, DNI
-            np.full(2 * self.env.n, half_width),               # Aim offsets on the aperture
-            [3000.0, 1500.0, 1.0, 1000.0, 1200.0, 1200.0],     # Power kW, peak flux kW/m2, intercept, particle out C, receiver wall C, SNOUT wall C
+            np.tile([half_width, half_width, 1.0], self.env.n),   # Per heliostat: aim dx, aim dv, standby flag
+            [3000.0, 1500.0, 1.0, 1.0, 1000.0, 1200.0],        # Power kW, peak flux kW/m2, intercept, thermal efficiency, particle out C, receiver wall C
+            np.full(n_panels, 1200.0),                         # SNOUT wall maximum per panel, C
             np.full(n_columns, 1000.0),                        # Outlet temperature per curtain column, C
         ]).astype(np.float32)
         self.observation_space = spaces.Box(-10.0, 10.0, shape = self.scale.shape, dtype = np.float32)   # Scaled values sit within about -1..3

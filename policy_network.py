@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 
+MIRROR_FEATURES = 3     # Observation numbers per heliostat, in this order: aim dx, aim dv, standby flag (AimingEnv._obs)
+
 
 #--- Linear layers with an activation between them and none after the last
 def mlp(sizes, activation = nn.Tanh):
@@ -14,7 +16,7 @@ def mlp(sizes, activation = nn.Tanh):
 
 #--- The agent's network: one shared encoder serves every heliostat, a GRU keeps a memory of the episode, each mirror gets its own choice
 class HeliostatPolicy(nn.Module):
-    def __init__(self, positions, n_points = 12, n_plant = 11, embed = 64, hidden = 128):
+    def __init__(self, positions, n_points = 16, n_plant = 19, embed = 64, hidden = 128):
         super().__init__()
 
         #--- Fixed per-heliostat features: position (m) and distance to the tower, scaled to about 0..1
@@ -23,28 +25,29 @@ class HeliostatPolicy(nn.Module):
         static = np.c_[positions / 300.0, distance / 300.0]
         self.register_buffer('static', torch.as_tensor(static))               # (n, 4), moves with the model
         self.n = len(positions)                                               # Heliostats
-        self.n_points = n_points                                              # Menu points per heliostat
+        self.n_points = n_points                                              # Actions per heliostat: the menu points plus standby
         self.n_plant = n_plant                                                # Plant-level observation length
         self.hidden = hidden                                                  # GRU memory size
 
         #--- Actor: mirror encoder (shared weights) + plant encoder -> GRU memory -> one head applied to every mirror
-        self.mirror_net = nn.Sequential(mlp([2 + 4, embed, embed]), nn.Tanh())   # [aim dx, aim dv] + the 4 static features -> embedding e_i
-        self.plant_net = nn.Sequential(mlp([n_plant, embed]), nn.Tanh())         # [hour, sun, DNI, power, peak flux, intercept, T out, walls, column T's] -> g
+        self.mirror_net = nn.Sequential(mlp([MIRROR_FEATURES + 4, embed, embed]), nn.Tanh())   # [aim dx, aim dv, standby] + the 4 static features -> embedding e_i
+        self.plant_net = nn.Sequential(mlp([n_plant, embed]), nn.Tanh())         # [hour, sun, DNI, power, peak flux, intercept, efficiencies, T out, walls, SNOUT panels, column T's] -> g
         self.gru = nn.GRUCell(2 * embed, hidden)                                 # Memory over [mean_i e_i, g], carried between steps
         self.actor = mlp([embed + hidden, embed, n_points])                      # logits_i = head([e_i, h]): n categorical distributions of n_points
 
         #--- Critic: its own encoders, no memory. Sharing the actor's mirror network wipes out the per-mirror features the actor needs (tested: no learning)
-        self.critic_mirror_net = nn.Sequential(mlp([2 + 4, embed, embed]), nn.Tanh())
+        self.critic_mirror_net = nn.Sequential(mlp([MIRROR_FEATURES + 4, embed, embed]), nn.Tanh())
         self.critic_plant_net = nn.Sequential(mlp([n_plant, embed]), nn.Tanh())
         self.critic = mlp([2 * embed, embed, 1])                                 # value = v([mean_i e'_i, g'])
         for layer in (self.actor[-1], self.critic[-1]):
             layer.weight.data.mul_(0.01)                                         # Small initial logits: near-uniform start
         return
 
-    #--- Split the scaled observation of gym_wrapper into per-mirror (B, n, 2) and plant (B, n_plant) parts
+    #--- Split the scaled observation of gym_wrapper into per-mirror (B, n, MIRROR_FEATURES) and plant (B, n_plant) parts
     def split(self, obs):
-        offsets = obs[:, 4:4 + 2 * self.n].reshape(-1, self.n, 2)
-        plant = torch.cat([obs[:, :4], obs[:, 4 + 2 * self.n:]], dim = 1)
+        end = 4 + MIRROR_FEATURES * self.n
+        offsets = obs[:, 4:end].reshape(-1, self.n, MIRROR_FEATURES)
+        plant = torch.cat([obs[:, :4], obs[:, end:]], dim = 1)
         return offsets, plant
 
     def initial_hidden(self, batch, device = None):
@@ -66,7 +69,7 @@ class HeliostatPolicy(nn.Module):
     def distribution(self, logits):
         return Categorical(logits = logits)                                    # Batch of (B, n) independent choices
 
-    #--- Act: sample one menu point per mirror (or take the most probable one); returns the per-mirror log-probabilities too
+    #--- Act: sample one action per mirror (or take the most probable one); returns the per-mirror log-probabilities too
     @torch.no_grad()
     def act(self, obs, hidden, mask, deterministic = False):
         logits, value, hidden = self(obs, hidden, mask)
