@@ -118,7 +118,7 @@ def main():
         writer = None
     log_file = open(os.path.join(args.out, 'log.csv'), 'a', newline = '')
     log = csv.writer(log_file)
-    logged_terms = ('optical_efficiency', 'thermal_efficiency', 'motor_travel', 'snout_margin', 'standby_fraction', 'wall_max_c', 'snout_wall_max_c', 'intercept')   # Means over the steps of each update
+    logged_terms = ('optical_efficiency', 'thermal_efficiency', 'motor_travel', 'snout_margin', 'standby_fraction', 'wall_max_c', 'snout_wall_max_c', 'snout_wall_max_measured_c', 'intercept')   # Means over the steps of each update
     if log_file.tell() == 0:
         log.writerow(['update', 'steps', 'seconds', 'reward_mean', 'episode_return', 'episode_steps', 'shutdowns', *logged_terms, 'policy_loss', 'value_loss', 'entropy', 'approx_kl'])
 

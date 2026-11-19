@@ -4,6 +4,7 @@ from viewfactor import view_factor, polygon_area, clean_polygon
 
 SIGMA = 5.6704e-8   # Stefan-Boltzmann constant (W/m2/K4)
 
+
 class SnoutThermal:
     def __init__(self, sp_params, snout, panels, params = {}, **overrides):
 
@@ -348,7 +349,9 @@ class SnoutThermal:
     #    bin_power_maps: the four arrays from panel_power_map(PT, panel, *panel_edges[k]), incident ray power per bin (W), panel order as in add_snout
     #    t_aperture_c: temperature of the hot cavity seen through the aperture (C)
     #    h_wind: forced convection on the inside face (W/m2/K), on top of the natural convection
-    def step(self, bin_power_maps, t_aperture_c, ambient_c = 20.0, dt_s = 60.0, h_wind = 0.0):
+    #    power_per_ray: W carried by one ray in bin_power_maps (PT.powerperray). Given, every cell also gets its ray-count uncertainty
+    #    dT = (dT/dq) q / sqrt(n) (Kline and McClintock 1953), and the 'upper' results are the maxima of T + dT
+    def step(self, bin_power_maps, t_aperture_c, ambient_c = 20.0, dt_s = 60.0, h_wind = 0.0, power_per_ray = None):
         if self.wall_temp_k is None:
             self.reset(ambient_c)
         eps = self.ir_emissivity
@@ -379,13 +382,26 @@ class SnoutThermal:
 
         results = {}
         temp_c = self.wall_temp_k - 273.15
+
+        def uncertainty_c(cell):
+            # Ray-count uncertainty of one cell's temperature: dT = (dT/dq) q / sqrt(n), with dT/dq = alpha / (4 eps sigma T^3 + h + k/delta); lateral conduction ignored
+            if not power_per_ray:
+                return 0.0
+            temperature_per_flux = self.solar_absorptivity / (4 * eps * SIGMA * self.wall_temp_k[cell] ** 3 + h_conv[cell] + 1 / self.r_out)
+            rays_in_cell = q_incident[cell] * self.cell_area[cell] / power_per_ray
+            return temperature_per_flux * q_incident[cell] / np.sqrt(max(rays_in_cell, 1.0))
+
         for ip, panel in enumerate(self.panels):
-            on_panel = self.cell_panel == ip
-            results['SNOUT ' + panel['name'] + ' wall T max (C)'] = temp_c[on_panel].max()
+            on_panel = np.flatnonzero(self.cell_panel == ip)
+            hottest_on_panel = on_panel[np.argmax(temp_c[on_panel])]
+            results['SNOUT ' + panel['name'] + ' wall T max (C)'] = temp_c[hottest_on_panel]
+            results['SNOUT ' + panel['name'] + ' wall T max upper (C)'] = temp_c[hottest_on_panel] + uncertainty_c(hottest_on_panel)   # The panel's hottest cell plus its own dT
             results['SNOUT ' + panel['name'] + ' peak flux (kW/m^2)'] = q_incident[on_panel].max() / 1e3
-        results['SNOUT wall T max (C)'] = temp_c.max()
         hottest = int(np.argmax(temp_c))
-        results['SNOUT dT/dq (K per W/m2)'] = self.solar_absorptivity / (4 * eps * SIGMA * self.wall_temp_k[hottest] ** 3 + h_conv[hottest] + 1 / self.r_out)   # Steady-state temperature change of the hottest cell per unit of incident flux (about 0.35 mK per W/m2); lateral conduction ignored
+        results['SNOUT wall T max (C)'] = temp_c[hottest]
+        results['SNOUT T max uncertainty (C)'] = uncertainty_c(hottest)
+        results['SNOUT wall T max upper (C)'] = temp_c[hottest] + results['SNOUT T max uncertainty (C)']   # T + dT of the hottest cell, what the environment uses
+        results['SNOUT dT/dq (K per W/m2)'] = self.solar_absorptivity / (4 * eps * SIGMA * self.wall_temp_k[hottest] ** 3 + h_conv[hottest] + 1 / self.r_out)
         results['SNOUT convection loss (kW)'] = float(np.sum(q_convection * self.cell_area)) / 1e3
         results['SNOUT over temp limit'] = bool(temp_c.max() > self.max_temp_c)
         self.results = results

@@ -34,6 +34,8 @@ class AimingEnv:
 
         #--- Safety and reward
         self.wall_limit_c = wall_limit_c            # RSLE-57 limit (C) on the receiver walls and the SNOUT: the episode stops above it
+        self.snout_uncertainty = True               # True: the SNOUT temperature used for the limit, the margin p and the observation is T + dT, the cell temperature plus its
+                                                    # propagated ray-count uncertainty (about 19 C at 5 cm and 1e6 rays). False: the measured T alone. The measured values stay in the metrics
         self.weights = dict(w_optical = w_optical, w_thermal = w_thermal, w_travel = w_travel,                    # Reward weights, see reward.score
                             w_margin = w_margin, margin_start_c = margin_start_c, wall_limit_c = wall_limit_c)   # SNOUT margin: costs w_margin per step at the limit, 0 below margin_start_c
         # w_travel = 5: at 0.05 (night_04 to night_11) a hop between neighbouring menu points cost nothing visible and the sampled policy moved
@@ -139,14 +141,16 @@ class AimingEnv:
             particle_kw = res['particle_kw'],                                # Power that went into the particles
             thermal_efficiency = res['efficiency'],                          # particle_kw / curtain power, from Janna's model
             wall_max_c = res['wall_max_c'],                                  # Receiver cavity walls
-            snout_wall_max_c = res['SNOUT wall T max (C)'],
+            snout_wall_max_c = res['SNOUT wall T max upper (C)' if self.snout_uncertainty else 'SNOUT wall T max (C)'],   # What the limit, the margin and the agent use
+            snout_wall_max_measured_c = res['SNOUT wall T max (C)'],         # The model value without the uncertainty
+            snout_wall_max_uncertainty_c = res['SNOUT T max uncertainty (C)'],   # dT = (dT/dq) q / sqrt(n) of the hottest cell
             snout_kw = np.array([res[f'SNOUT {p} absorbed (kW)'] for p in ('top', 'bottom', 'east', 'west')]),
             snout_peak_kw_m2 = max(res[f'SNOUT {p} peak flux (kW/m^2)'] for p in ('top', 'bottom', 'east', 'west')),
             heliostat_intercept = res['heliostat_intercept'],                     # (n,) each mirror's own rays absorbed on the curtain
             heliostat_column_rays = res['heliostat_column_rays'],                 # (n, 5) its rays absorbed per curtain column
             heliostat_snout_rays = res['heliostat_snout_rays'],                   # (n, 4) its rays landing on each SNOUT panel
             heliostat_hot_band_kw_m2 = res['heliostat_hot_band_kw_m2'],           # (n, 4) its incident flux in the 10 cm band next to the aperture of each panel, where the maximum sits
-            snout_panel_max_c = np.array([res[f"SNOUT {p['name']} wall T max (C)"] for p in self.field.snout_panels]),   # (4,) same panel order
+            snout_panel_max_c = np.array([res[f"SNOUT {p['name']} wall T max {'upper ' if self.snout_uncertainty else ''}(C)"] for p in self.field.snout_panels]),   # (4,) same panel order, same choice
             snout_temperature_per_flux = res['SNOUT dT/dq (K per W/m2)'],         # How much the hottest SNOUT cell cools per unit of flux taken away (about 0.35 mK per W/m2)
             n_standby = int(self.standby.sum()),                                   # Heliostats in standby this step
             standby_fraction = float(self.standby.mean()),

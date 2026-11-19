@@ -164,7 +164,7 @@ def trace(PT, field, sun_az, sun_el, nray = 1e5, dni = 950, dt_s = 60.0, seed = 
     res.update(field.thermal.step(flux))                                   # Receiver: particle temperatures, mass flow, walls
 
     if field.snout is not None:
-        res.update(field.snout_thermal.step(snout_power_maps(PT, field), t_aperture_c = res['aperture_eff_c'], dt_s = dt_s))   # SNOUT walls one step on; the cavity seen through the aperture radiates Janna's QIR
+        res.update(field.snout_thermal.step(snout_power_maps(PT, field), t_aperture_c = res['aperture_eff_c'], dt_s = dt_s, power_per_ray = PT.powerperray))   # SNOUT walls one step on; the cavity seen through the aperture radiates Janna's QIR
     return res, flux
 
 #--- Incident ray power per bin on each SNOUT panel (W), binned on the thermal model's own mesh
@@ -177,7 +177,7 @@ def warm_up_snout(field, PT, t_aperture_c, dt_s = 60.0, max_minutes = 240, tol_c
     field.snout_thermal.reset()
     previous_c = -1.0
     for _ in range(max_minutes):
-        result = field.snout_thermal.step(power_maps, t_aperture_c = t_aperture_c, dt_s = dt_s)
+        result = field.snout_thermal.step(power_maps, t_aperture_c = t_aperture_c, dt_s = dt_s, power_per_ray = PT.powerperray)
         if abs(result['SNOUT wall T max (C)'] - previous_c) < tol_c:
             break
         previous_c = result['SNOUT wall T max (C)']
