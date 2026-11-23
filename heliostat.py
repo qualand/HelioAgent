@@ -9,7 +9,7 @@ import sys
 import os
 sys.path.insert(1, os.path.join(sys.path[0], '..', '..'))
 
-from api.pysoltrace import PySolTrace, Point
+from soltrace_api import SolTrace as PySolTrace, Point
 from util import compute_euler_angles, sun_vector, trace, sun_position, meinel_clearsky
 
 import matplotlib.pyplot as plt

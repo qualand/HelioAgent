@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
-from copylot_to_soltrace import Heliostat_Field, simulate_soltrace, process_soltrace_results
-from api.pysoltrace import Point
+from solar_field import HeliostatField, simulate_soltrace, process_soltrace_results
+from soltrace_api import Point
 from snout_soltrace import snout_results, panel_power_map
 from snout_thermal import SnoutThermal
 from receiver_soltrace import curtain_flux
@@ -23,34 +23,15 @@ WEATHER_FILE = 'NSRDB_alburquerque_weather/850562_35.08_-106.65_{year}.csv'   # 
 #--- Build the plant once: real NSTTF heliostat layout and measured facet canting, SolTrace scene, receiver and SNOUT thermal models
 #    Returns the field object (list of heliostats) and PT (the SolTrace scene)
 def build_field():
-    field = Heliostat_Field()
-    field.tower_height = 45.48          # G3P3 aperture center (m)
-    field.rec_type = 3
-    field.rec_height = 1.32             # Aperture height (m)
-    field.rec_width = 1.32              # Aperture width (m)
-    field.rec_elevation = 0.0
-    field.rec_azimuth = 19.414          # Aperture aims at (0, 122) from the tower at (-40, 8.5)
-    field.cavity = dict(height_ratio = 1.1, width_ratio = 1.1, curtain_depth = 0.5, tower_face = 10.0)
-    field.snout = dict(depth = 0.70, horiz = 96.0, top = 0.0, bot = 34.0)   # SNOUT depth (m), full side angle, top and bottom tilts (deg)
-    field.helio_height = 6.3502
-    field.helio_width = 6.8074          # Real NSTTF heliostat: 25 facets of 1.2192 m with gaps
-    field.helio_n_cant_x = 5
-    field.helio_n_cant_y = 5
-    field.helio_focus_method = 1
-    field.n_focus_bands = 3
-    field.helio_reflectivity = 0.885
-    field.helio_soiling = 1.0
-    field.helio_surf_err = 0.0012       # Slope error (rad), 1.2 mrad
-    field.helio_reflect_err = 0.00005   # Specularity (rad), 0.05 mrad
+    field = HeliostatField()                                                                          # Aperture, SNOUT, cavity and heliostat numbers are its defaults
     coords = pd.read_csv('nsttf_data/coordinates.csv', header = None, names = ['X', 'Y', 'Z'], encoding = 'utf-8-sig')
     names = pd.read_csv('nsttf_data/ids.csv', header = None)[0].str.lstrip('*')
     field.set_layout(coords['X'].values + 40.0, coords['Y'].values - 8.5, coords['Z'].values)   # Tower at the origin
-    field.helio_facet_aperture = (1.2192, 1.2192)
     tables = [np.genfromtxt('nsttf_data/canting/' + name + '_Off_Axis_Canting_Details_TowerTop_Target.csv', delimiter = ',', skip_header = 1) for name in names]
-    field.helio_facet_data = [np.c_[t[:, 1], t[:, 2], t[:, 3] + 0.1778, t[:, 6:9]] for t in tables]
+    field.facet_data = [np.c_[t[:, 1], t[:, 2], t[:, 3] + 0.1778, t[:, 6:9]] for t in tables]       # Measured facet origins and canting normals
     PT = field.set_up_soltrace()
     field.thermal = ReceiverThermal()                                                                 # Janna's receiver model with the mass flow controller
-    field.snout_thermal = SnoutThermal(field.results['sp_parameters'], field.snout, field.snout_panels)   # SNOUT walls, mesh defined there
+    field.snout_thermal = SnoutThermal(field, field.snout, field.snout_panels)                        # SNOUT walls, mesh defined there
     facet_ids = [facet.id for h in field.heliostats for facet in h.get_elements()]
     field.facet_owner = np.full(max(facet_ids) + 2, -1, dtype = int)                                  # SolTrace element id + 1 -> heliostat index
     for index, h in enumerate(field.heliostats):
@@ -62,10 +43,9 @@ def build_field():
 #--- Aperture frame in global coordinates (x east, y north, z up): center, sideways unit vector, up unit vector
 #    An aim offset (dx, dv) in m is center + dx * u_h + dv * u_v; both vectors lie in the aperture plane
 def receiver_axes(field):
-    p = field.results['sp_parameters']
-    az = np.radians(p['receiver.0.rec_azimuth'])
-    el = np.radians(p['receiver.0.rec_elevation'])
-    center = np.array([0.0, 0.0, p['solarfield.0.tht']])
+    az = np.radians(field.aperture_azimuth)
+    el = np.radians(field.aperture_elevation)
+    center = np.array([0.0, 0.0, field.tower_height])
     u_h = np.array([np.cos(az), - np.sin(az), 0.0])
     u_v = np.array([-np.sin(el) * np.sin(az), -np.sin(el) * np.cos(az), np.cos(el)])
     return center, u_h, u_v
@@ -89,8 +69,7 @@ def set_aim_xyz(field, xyz):
 
 #--- Aim-point menu: a 3 x 5 grid on the aperture, `margin` inside its edges, point k = row * n_cols + col
 def aim_grid(field, n_cols = 3, n_rows = 5, margin = 0.15):
-    p = field.results['sp_parameters']
-    W, H = p['receiver.0.rec_width'], p['receiver.0.rec_height']    # 1.32 m x 1.32 m aperture
+    W, H = field.aperture_width, field.aperture_height              # 1.32 m x 1.32 m aperture
     xs = np.linspace(-W / 2 + margin, W / 2 - margin, n_cols)       # Left to right
     vs = np.linspace(-H / 2 + margin, H / 2 - margin, n_rows)       # Bottom to top
     return np.array([(x, v) for v in vs for x in xs])
@@ -164,7 +143,7 @@ def trace(PT, field, sun_az, sun_el, nray = 1e5, dni = 950, dt_s = 60.0, seed = 
     res.update(field.thermal.step(flux))                                   # Receiver: particle temperatures, mass flow, walls
 
     if field.snout is not None:
-        res.update(field.snout_thermal.step(snout_power_maps(PT, field), t_aperture_c = res['aperture_eff_c'], dt_s = dt_s))   # SNOUT walls one step on; the cavity seen through the aperture radiates Janna's QIR
+        res.update(field.snout_thermal.step(snout_power_maps(PT, field), t_aperture_c = res['aperture_eff_c'], dt_s = dt_s, power_per_ray = PT.powerperray))   # SNOUT walls one step on; the cavity seen through the aperture radiates Janna's QIR
     return res, flux
 
 #--- Incident ray power per bin on each SNOUT panel (W), binned on the thermal model's own mesh
@@ -177,7 +156,7 @@ def warm_up_snout(field, PT, t_aperture_c, dt_s = 60.0, max_minutes = 240, tol_c
     field.snout_thermal.reset()
     previous_c = -1.0
     for _ in range(max_minutes):
-        result = field.snout_thermal.step(power_maps, t_aperture_c = t_aperture_c, dt_s = dt_s)
+        result = field.snout_thermal.step(power_maps, t_aperture_c = t_aperture_c, dt_s = dt_s, power_per_ray = PT.powerperray)
         if abs(result['SNOUT wall T max (C)'] - previous_c) < tol_c:
             break
         previous_c = result['SNOUT wall T max (C)']
